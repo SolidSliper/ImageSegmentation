@@ -163,21 +163,7 @@ void removeNoiseFromGraph(const std::vector<std::vector<ImageSegmentation::Node*
     }
 }
 
-// pointInPolygon: Testuje, ci bod lezi v mnohouholniku metodou ray casting.
-bool pointInPolygon(const cv::Point& pt, const std::vector<cv::Point>& polygon)
-{
-    bool inside = false;
-    int n = polygon.size();
-    for (int i = 0, j = n - 1; i < n; j = i++) {
-        if (((polygon[i].y > pt.y) != (polygon[j].y > pt.y)) &&
-            (pt.x < (polygon[j].x - polygon[i].x) * (pt.y - polygon[i].y) /
-                double(polygon[j].y - polygon[i].y) + polygon[i].x))
-            inside = !inside;
-    }
-    return inside;
-}
-
-// computeConvexHull: Vypocet convex hull pomocou monotone chain algoritmu.
+// computeConvexHull: Vypocet convex hull pomocou "monotone chain" algoritmu.
 std::vector<cv::Point> computeConvexHull(std::vector<cv::Point> pts)
 {
     if (pts.size() <= 1)
@@ -733,12 +719,7 @@ double maxFlowDinic(ImageSegmentation::Graph* graph, int maxNodeId)
         std::vector<int> start(maxNodeId, 0);
 
         // Pokial mozeme poslat nejaky tok, inkrementuj celkovy flow
-        while (double curr_flow = sendFlow(
-            graph->source,
-            std::numeric_limits<double>::max(),
-            graph->sink,
-            level,
-            start))
+        while (double curr_flow = sendFlow(graph->source, std::numeric_limits<double>::max(), graph->sink, level, start))
         {
             flow += curr_flow;
         }
@@ -869,6 +850,7 @@ bool ImageSegmentation::segmentImage(const cv::Mat& input,
     // Ziskaj Rez, vypln diery a odstran hluc
     std::vector<bool> visited(maxNodeId, false);
     getSegmentationCut(data.graph, visited, maxNodeId);
+
     fillHolesInGraph(data.pixelNodes, visited, data.m, data.n);
     removeNoiseFromGraph(data.pixelNodes, visited, threshold);
 

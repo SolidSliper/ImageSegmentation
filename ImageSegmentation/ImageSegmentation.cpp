@@ -66,7 +66,7 @@ QImage ImageSegmentation::cvMatToQImage(const cv::Mat& mat)
         return img.copy();
     }
     default:
-        // fallback preved na sivy
+        // preved na sivy
         cv::Mat grey;
         mat.convertTo(grey, CV_8U);
         QImage img(grey.data, grey.cols, grey.rows, grey.step, QImage::Format_Grayscale8);
@@ -127,7 +127,7 @@ cv::Mat ImageSegmentation::applyROIMask(const cv::Mat& input)
 // Odstrani spodnych 10% obrazka ako informacny overlay
 cv::Mat ImageSegmentation::removeInfoOverlay(const cv::Mat& input)
 {
-    int overlayHeight = input.rows / 10;
+    int overlayHeight = input.rows / 9;
     cv::Rect cropRect(0, 0, input.cols, input.rows - overlayHeight);
     return input(cropRect).clone();
 }
@@ -150,17 +150,17 @@ void ImageSegmentation::runSegmentation()
         return;
     }
 
-    // najdenie najvacsieho konturu na dalsiu analyzu
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    if (!contours.empty()) {
-        int maxIdx = 0;
-        double maxA = 0;
-        for (int i = 0; i < static_cast<int>(contours.size()); i++) {
-            double a = cv::contourArea(contours[i]);
-            if (a > maxA) { maxA = a; maxIdx = i; }
-        }
-    }
+    //// najdenie najvacsieho konturu na dalsiu analyzu
+    //std::vector<std::vector<cv::Point>> contours;
+    //cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    //if (!contours.empty()) {
+    //    int maxIdx = 0;
+    //    double maxA = 0;
+    //    for (int i = 0; i < static_cast<int>(contours.size()); i++) {
+    //        double a = cv::contourArea(contours[i]);
+    //        if (a > maxA) { maxA = a; maxIdx = i; }
+    //    }
+    //}
 
     // ulozenie vystupnych obrazkov a statistiky
     outputObjectImage = outObj;
