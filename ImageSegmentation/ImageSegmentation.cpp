@@ -179,10 +179,10 @@ void ImageSegmentation::runSegmentation()
             longestFeret,
             circleDiameter,
             shortestFeret);
-        ui.labelFeretResults->setText(QString("Feret diameters: %1 / %2, Circle diameter: %3")
+        /*ui.labelFeretResults->setText(QString("Feret diameters: %1 / %2, Circle diameter: %3")
             .arg(longestFeret, 0, 'f', 2)
             .arg(shortestFeret, 0, 'f', 2)
-            .arg(circleDiameter, 0, 'f', 2));
+            .arg(circleDiameter, 0, 'f', 2));*/
     }
     {
         double majorAxis = 0.0, minorAxis = 0.0;

@@ -721,6 +721,7 @@ double maxFlowDinic(ImageSegmentation::Graph* graph, int maxNodeId)
         // Pokial mozeme poslat nejaky tok, inkrementuj celkovy flow
         while (double curr_flow = sendFlow(graph->source, std::numeric_limits<double>::max(), graph->sink, level, start))
         {
+            qDebug() << curr_flow;
             flow += curr_flow;
         }
         // Po vycerpani blokovaneho toku preco BFS znova obnovi vrstvy
@@ -728,6 +729,87 @@ double maxFlowDinic(ImageSegmentation::Graph* graph, int maxNodeId)
 
     return flow;
 }
+
+const double EPS = 1e-9;
+const double INF_CAP = 1e12; // alebo dynamicky spocitane hodnoty podla obrazu
+
+// BFS that fills parentEdge: parentEdge[v->id] = edge used to reach v (edge->to == v)
+bool bfsEdmondsKarp(ImageSegmentation::Graph* graph,
+    int maxNodeId,
+    std::vector<ImageSegmentation::Link*>& parentEdge)
+{
+    std::fill(parentEdge.begin(), parentEdge.end(), nullptr);
+    std::queue<ImageSegmentation::Node*> q;
+    std::vector<char> visited(maxNodeId, 0);
+
+    q.push(graph->source);
+    visited[graph->source->id] = 1;
+
+    while (!q.empty()) {
+        ImageSegmentation::Node* u = q.front(); q.pop();
+        for (ImageSegmentation::Link* e : u->adj) {
+            ImageSegmentation::Node* v = e->to;
+            double residual = e->capacity - e->flow;
+            if (!visited[v->id] && residual > EPS) {
+                parentEdge[v->id] = e;     // we reached v via edge e (u -> v)
+                visited[v->id] = 1;
+                if (v == graph->sink) {
+                    return true; // found path to sink
+                }
+                q.push(v);
+            }
+        }
+    }
+    return false; // no augmenting path
+}
+
+double maxFlowEdmondsKarp(ImageSegmentation::Graph* graph, int maxNodeId)
+{
+    double maxFlow = 0.0;
+
+    // parentEdge[v_id] = edge used to reach v in BFS
+    std::vector<ImageSegmentation::Link*> parentEdge(maxNodeId, nullptr);
+
+    // Repeat while there exists an augmenting path (found by BFS)
+    while (bfsEdmondsKarp(graph, maxNodeId, parentEdge)) {
+        // find bottleneck (minimum residual) along the path sink <- ... <- source
+        double path_flow = std::numeric_limits<double>::infinity();
+        ImageSegmentation::Node* v = graph->sink;
+
+        while (v != graph->source) {
+            ImageSegmentation::Link* e = parentEdge[v->id];
+            if (e == nullptr) { // defensive - should not happen if BFS returned true
+                path_flow = 0.0;
+                break;
+            }
+            double residual = e->capacity - e->flow;
+            path_flow = std::min(path_flow, residual);
+            // prev node is edge->reverse->to (because reverse->to points to 'from')
+            v = e->reverse->to;
+        }
+
+        if (path_flow <= EPS || path_flow == std::numeric_limits<double>::infinity()) {
+            // nothing to push (defensive). Should not normally happen.
+            break;
+        }
+
+        // augment along the path: increase forward flow, decrease reverse flow
+        v = graph->sink;
+        while (v != graph->source) {
+            ImageSegmentation::Link* e = parentEdge[v->id];
+            ImageSegmentation::Link* rev = e->reverse;
+            e->flow += path_flow;
+            rev->flow -= path_flow;
+            v = rev->to; // move to previous node
+        }
+
+        maxFlow += path_flow;
+    }
+
+    return maxFlow;
+}
+
+
 
 // getSegmentationCut: po vykonani max flow vyuzije residualny graf
 // a BFS/DFS zisti, ktore uzly su dosiahnutelne zo zdroja.
@@ -845,9 +927,12 @@ bool ImageSegmentation::segmentImage(const cv::Mat& input,
     // Vytvor data pre graf a spust max flow algoritmus
     GraphData data = createGraphData(input, lambda, mode, true, userObject, userBackground, roiMask);
     int maxNodeId = 2 + input.rows * input.cols;
-    double flow = maxFlowDinic(data.graph, maxNodeId);
+    if(ui.comboBoxAlgorithm->currentText() == "Dinic")
+        double flow = maxFlowDinic(data.graph, maxNodeId);
+    else
+        double flow = maxFlowEdmondsKarp(data.graph, maxNodeId);
 
-    // Ziskaj Rez, vypln diery a odstran hluc
+    // Ziskaj Rez, vypln diery a odstran sum
     std::vector<bool> visited(maxNodeId, false);
     getSegmentationCut(data.graph, visited, maxNodeId);
 
