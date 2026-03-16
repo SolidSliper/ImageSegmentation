@@ -1,9 +1,4 @@
 x64
-ImageSegmentation.sln
-ImageSegmentation/x64
-ImageSegmentation/ImageSegmentation.vcxproj
-ImageSegmentation/ImageSegmentation.vcxproj.filters
-ImageSegmentation/ImageSegmentation.vcxproj.user
+/ImageSegmentation
 .vs
-ImageSegmentation.sln
 /build

@@ -3,13 +3,7 @@
 
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QDebug>
-#include <QDir>
-#include <QFileInfo>
-#include <QCoreApplication>
 #include <QMouseEvent>
-#include <QFile>
-#include <QTextStream>
 #include <QInputDialog>
 
 // Konstruktor, destruktor a inicializacia UI
@@ -80,11 +74,6 @@ void ImageSegmentation::clearAllData()
     // Reset tool buttons and UI fields
     ui.toolButtonSelectROIRectangle->setChecked(false);
     ui.toolButtonSelectROICustom->setChecked(false);
-    ui.toolButtonObject->setChecked(false);
-    ui.toolButtonEdge->setChecked(false);
-    ui.toolButtonFeret->setChecked(false);
-    ui.toolButtonEllipse->setChecked(false);
-    ui.toolButtonMBR->setChecked(false);
     ui.toolButtonLight->setChecked(true);
 
     ui.spinBoxImageArea->setValue(0);
@@ -124,6 +113,44 @@ QImage ImageSegmentation::cvMatToQImage(const cv::Mat& mat)
     }
 }
 
+// Konverzia QImage -> cv::Mat. Vrati kopiu (bez vlastnenia pamate QImage).
+cv::Mat ImageSegmentation::QImageToCvMat(const QImage& image)
+{
+    if (image.isNull())
+        return cv::Mat();
+
+    switch (image.format()) {
+    case QImage::Format_Grayscale8: {
+        return cv::Mat(image.height(), image.width(), CV_8UC1,
+            const_cast<uchar*>(image.constBits()), image.bytesPerLine()).clone();
+    }
+    case QImage::Format_RGB888: {
+        // QImage RGB888 is stored as RGB; convert to BGR for OpenCV
+        cv::Mat tmp(image.height(), image.width(), CV_8UC3,
+            const_cast<uchar*>(image.constBits()), image.bytesPerLine());
+        cv::Mat mat;
+        cv::cvtColor(tmp, mat, cv::COLOR_RGB2BGR);
+        return mat;
+    }
+    case QImage::Format_ARGB32:
+    case QImage::Format_ARGB32_Premultiplied:
+    case QImage::Format_RGBA8888:
+    case QImage::Format_RGBA8888_Premultiplied: {
+        // Keep 4 channels (BGRA/ARGB layout depends on endianness); return 4-channel image
+        cv::Mat tmp(image.height(), image.width(), CV_8UC4,
+            const_cast<uchar*>(image.constBits()), image.bytesPerLine());
+        return tmp.clone();
+    }
+    default: {
+        // Fallback: convert to ARGB32 and return 4-channel copy
+        QImage conv = image.convertToFormat(QImage::Format_ARGB32);
+        cv::Mat tmp(conv.height(), conv.width(), CV_8UC4,
+            const_cast<uchar*>(conv.constBits()), conv.bytesPerLine());
+        return tmp.clone();
+    }
+    }
+}
+
 // Zobrazenie obrazka v labeli, aplikacia mierky a zachovanie pomeru stran
 void ImageSegmentation::displayImage(const QImage& img)
 {
@@ -132,38 +159,6 @@ void ImageSegmentation::displayImage(const QImage& img)
         Qt::KeepAspectRatio,
         Qt::SmoothTransformation);
     ui.imageLabel->setPixmap(QPixmap::fromImage(scaledImg));
-}
-
-// Prepne zobrazenie podla vybraneho tlacidla
-void ImageSegmentation::updateDisplay()
-{
-    QImage qImage;
-    if (ui.toolButtonFeret->isChecked() && !outputFeretImage.empty())
-        qImage = cvMatToQImage(outputFeretImage);
-    else if (ui.toolButtonEllipse->isChecked() && !outputEllipseImage.empty())
-        qImage = cvMatToQImage(outputEllipseImage);
-    else if (ui.toolButtonMBR->isChecked() && !outputMBRImage.empty())
-        qImage = cvMatToQImage(outputMBRImage);
-    else if (ui.toolButtonObject->isChecked())
-        qImage = cvMatToQImage(outputObjectImage);
-    else if (ui.toolButtonEdge->isChecked())
-        qImage = cvMatToQImage(outputEdgeImage);
-    else
-        qImage = cvMatToQImage(inputImage);
-    displayImage(qImage);
-}
-
-// Zrusenie stavu ostatnych tlacidiel pri vybere jedneho
-void ImageSegmentation::resetToolButtons(QAbstractButton* active)
-{
-    QList<QAbstractButton*> buttons = { ui.toolButtonObject,
-                                        ui.toolButtonEdge,
-                                        ui.toolButtonFeret,
-                                        ui.toolButtonEllipse,
-                                        ui.toolButtonMBR };
-    for (QAbstractButton* button : buttons)
-        if (button != active)
-            button->setChecked(false);
 }
 
 // Vratenie ROI masky: pouzije uzivatelovu, ak existuje; inak odstranenie overlay
@@ -193,6 +188,10 @@ void ImageSegmentation::runSegmentation()
     bool isLight;
     cv::Mat roiApplied = applyROIMask(inputImage);
 
+    // meranie casu segmentacie
+    QElapsedTimer segTimer;
+    segTimer.start();
+
     // volanie segmentacnej funkcie
     if (!segmentImage(inputImage, currentMode, lambda,
         outObj, outEdge, mask, isLight, roiApplied)) {
@@ -200,17 +199,8 @@ void ImageSegmentation::runSegmentation()
         return;
     }
 
-    //// najdenie najvacsieho konturu na dalsiu analyzu
-    //std::vector<std::vector<cv::Point>> contours;
-    //cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    //if (!contours.empty()) {
-    //    int maxIdx = 0;
-    //    double maxA = 0;
-    //    for (int i = 0; i < static_cast<int>(contours.size()); i++) {
-    //        double a = cv::contourArea(contours[i]);
-    //        if (a > maxA) { maxA = a; maxIdx = i; }
-    //    }
-    //}
+    qint64 elapsedMs = segTimer.elapsed();
+    qDebug() << "Segmentation time:" << elapsedMs << "ms";
 
     // ulozenie vystupnych obrazkov a statistiky
     outputObjectImage = outObj;
@@ -304,7 +294,7 @@ bool ImageSegmentation::eventFilter(QObject* obj, QEvent* event)
                     roiSelectionActive = false;
                     roiFirstPointSet = false;
                     ui.toolButtonSelectROIRectangle->setChecked(false);
-                    updateDisplay();
+
                 }
                 return true;
             }
@@ -352,7 +342,7 @@ bool ImageSegmentation::eventFilter(QObject* obj, QEvent* event)
                         // finish
                         polygonSelectionActive = false;
                         ui.toolButtonSelectROICustom->setChecked(false);
-                        updateDisplay();
+                        
                     }
                     else {
                         // not enough points, clear
@@ -371,7 +361,7 @@ bool ImageSegmentation::eventFilter(QObject* obj, QEvent* event)
 // Akcie pre menu Subor: otvorenie, ulozenie, atd.
 void ImageSegmentation::on_actionOpen_triggered()
 {
-    QString filename = QFileDialog::getOpenFileName(this, "Open Image", "D:/article/military-data-2026",
+    QString filename = QFileDialog::getOpenFileName(this, "Open Image", "D:/article/military-data-2026/archive(1)/MilitaryHelicopterDataSet",
         "Image Files (*.png *.jpg *.tif)");
     if (filename.isEmpty())
         return;
@@ -429,30 +419,14 @@ void ImageSegmentation::on_actionSave_triggered()
     QString defaultName = loadedImageName.isEmpty() ? "output_overlay" : loadedImageName + "_overlay";
     QString filename = QFileDialog::getSaveFileName(this,
         "Save Image with Overlays",
-        defaultName + ".tif",
+        "D:/article/military-data-2026/Images/Helicopter/" + defaultName + ".tif",
         "TIF Image (*.tif)");
     if (filename.isEmpty())
         return;
 
-    // vyber, ktory obrazok sa ulozi podla aktivneho tlacidla
-    cv::Mat saveMat;
-    if ((ui.toolButtonFeret->isChecked() && !outputFeretImage.empty()) ||
-        (ui.toolButtonEllipse->isChecked() && !outputEllipseImage.empty()) ||
-        (ui.toolButtonMBR->isChecked() && !outputMBRImage.empty()))
-    {
-        if (ui.toolButtonFeret->isChecked())
-            saveMat = outputFeretImage;
-        else if (ui.toolButtonEllipse->isChecked())
-            saveMat = outputEllipseImage;
-        else
-            saveMat = outputMBRImage;
-    }
-    else if (ui.toolButtonObject->isChecked())
-        saveMat = outputObjectImage;
-    else if (ui.toolButtonEdge->isChecked())
-        saveMat = outputEdgeImage;
-    else
-        saveMat = inputImage;
+   
+
+    cv::Mat saveMat = QImageToCvMat(currentDisplay);
 
     // ak je segmentovany objekt, pridaj anotaciu
     /*if (segmentedObjectArea > 0)
@@ -706,43 +680,78 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
 void ImageSegmentation::on_pushButtonScale_clicked()
 {
     scaleFactor = ui.doubleSpinBoxScale->value();
-    updateDisplay();
+    displayImage(currentDisplay);
+}
+
+void ImageSegmentation::on_actionFeret_triggered()
+{
+    QImage qImage;
+    qImage = cvMatToQImage(outputFeretImage);
+    currentDisplay = qImage;
+    displayImage(qImage);
+}
+
+void ImageSegmentation::on_actionEdge_triggered()
+{
+    QImage qImage;
+    qImage = cvMatToQImage(outputEdgeImage);
+    currentDisplay = qImage;
+    displayImage(qImage);
 }
 
 // Prepnutie zobrazenia na segmentovany objekt
-void ImageSegmentation::on_toolButtonObject_toggled(bool checked)
+void ImageSegmentation::on_actionObject_triggered()
 {
-    if (checked) resetToolButtons(ui.toolButtonObject);
-    updateDisplay();
+    QImage qImage;
+    qImage = cvMatToQImage(outputObjectImage);
+    currentDisplay = qImage;
+    displayImage(qImage);
 }
 
-// Prepnutie zobrazenia na hrany
-void ImageSegmentation::on_toolButtonEdge_toggled(bool checked)
+void ImageSegmentation::on_actionEllipse_triggered()
 {
-    if (checked) resetToolButtons(ui.toolButtonEdge);
-    updateDisplay();
+    QImage qImage;
+    qImage = cvMatToQImage(outputEllipseImage);
+    currentDisplay = qImage;
+    displayImage(qImage);
 }
 
-// Prepnutie zobrazenia na Feretove priemery
-void ImageSegmentation::on_toolButtonFeret_toggled(bool checked)
+void ImageSegmentation::on_actionMBR_triggered()
 {
-    if (checked) resetToolButtons(ui.toolButtonFeret);
-    updateDisplay();
+    QImage qImage;
+    qImage = cvMatToQImage(outputMBRImage);
+    currentDisplay = qImage;
+    displayImage(qImage);
 }
 
-// Prepnutie zobrazenia na Legendreovu elipsu
-void ImageSegmentation::on_toolButtonEllipse_toggled(bool checked)
+void ImageSegmentation::on_actionOriginal_triggered()
 {
-    if (checked) resetToolButtons(ui.toolButtonEllipse);
-    updateDisplay();
+    QImage qImage;
+    qImage = cvMatToQImage(inputImage);
+    displayImage(qImage);
 }
 
-// Prepnutie zobrazenia na MBR
-void ImageSegmentation::on_toolButtonMBR_toggled(bool checked)
+// Zmena hodnot seed intenzit 
+void ImageSegmentation::on_horizontalSliderBackground_valueChanged()
 {
-    if (checked) resetToolButtons(ui.toolButtonMBR);
-    updateDisplay();
+    ui.doubleSpinBoxBackground->setValue(ui.horizontalSliderBackground->value());
 }
+
+void ImageSegmentation::on_horizontalSliderObject_valueChanged()
+{
+    ui.doubleSpinBoxObject->setValue(ui.horizontalSliderObject->value());
+}
+
+void ImageSegmentation::on_doubleSpinBoxBackground_valueChanged()
+{
+    ui.horizontalSliderBackground->setValue(ui.doubleSpinBoxBackground->value());
+}
+
+void ImageSegmentation::on_doubleSpinBoxObject_valueChanged()
+{
+    ui.horizontalSliderObject->setValue(ui.doubleSpinBoxObject->value());
+}
+
 
 // Aktivacia / ukoncenie rezimu pre ROI vyber
 void ImageSegmentation::on_toolButtonSelectROIRectangle_toggled(bool checked)
@@ -783,5 +792,5 @@ void ImageSegmentation::on_pushButtonProcess_clicked()
         return;
     }
     runSegmentation();
-    updateDisplay();
+
 }

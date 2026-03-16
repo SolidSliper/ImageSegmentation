@@ -1,8 +1,6 @@
 #pragma once
 
 #include <QtWidgets/QMainWindow>
-#include <QScrollArea>
-#include <QLabel>
 #include <QButtonGroup>
 #include "ui_ImageSegmentation.h"
 
@@ -102,6 +100,7 @@ private:
     void runSegmentation();
     void displayImage(const QImage& img);
     QImage cvMatToQImage(const cv::Mat& mat);
+    cv::Mat QImageToCvMat(const QImage& image);
 
     // Vypocet geometrickych parametrov zo segmentacnej masky
     void computeFeretDiameterAndCircle(const cv::Mat& input,
@@ -137,7 +136,6 @@ private:
     bool roiSelectionActive = false;  // Ci je aktivny rezim vyberu
     bool roiFirstPointSet = false;    // Ci bol nastavany prvy bod
     cv::Point roiFirstPoint, roiSecondPoint; // Koordinaty vyberu
-    void resetToolButtons(QAbstractButton* active);
 
 private slots:
     // Akcie suboroveho menu
@@ -152,12 +150,17 @@ private slots:
     void on_pushButtonScale_clicked();     // Zmeni mierku obrazu
 
     // Tlacidla pre prepnutie zobrazenia prekryvov
-    void updateDisplay();
-    void on_toolButtonFeret_toggled(bool checked);
-    void on_toolButtonObject_toggled(bool checked);
-    void on_toolButtonEdge_toggled(bool checked);
-    void on_toolButtonEllipse_toggled(bool checked);
-    void on_toolButtonMBR_toggled(bool checked);
+    void on_actionOriginal_triggered();
+    void on_actionFeret_triggered();
+    void on_actionEdge_triggered();
+    void on_actionObject_triggered();
+    void on_actionEllipse_triggered();
+    void on_actionMBR_triggered();
+
+    void on_horizontalSliderBackground_valueChanged();
+    void on_horizontalSliderObject_valueChanged();
+    void on_doubleSpinBoxBackground_valueChanged();
+    void on_doubleSpinBoxObject_valueChanged();
 
     // Tlacidlo pre interaktivny vyber ROI
     void on_toolButtonSelectROIRectangle_toggled(bool checked);

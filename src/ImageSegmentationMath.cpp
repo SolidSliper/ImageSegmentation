@@ -80,8 +80,9 @@ cv::Mat ImageSegmentation::annotateImage(const cv::Mat& img, double areaObject, 
 
 // fillHolesInGraph: Zaplni diery v segmentacii objektu pomocou flood fill.
 void fillHolesInGraph(const std::vector<std::vector<ImageSegmentation::Node*>>& pixelNodes,
-    std::vector<bool>& visited, int m, int n)
+    std::vector<bool>& visited, int m, int n, int ignoreHoleSize)
 {
+    // Create mask of visited pixels (foreground) and flood-fill from borders
     cv::Mat mask = cv::Mat::zeros(m, n, CV_8UC1);
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < n; j++) {
@@ -90,6 +91,8 @@ void fillHolesInGraph(const std::vector<std::vector<ImageSegmentation::Node*>>& 
                 mask.at<uchar>(i, j) = 255;
         }
     }
+
+    // flood contains areas connected to border (background that is not hole)
     cv::Mat flood = mask.clone();
     for (int i = 0; i < m; i++) {
         if (flood.at<uchar>(i, 0) == 0)
@@ -103,12 +106,62 @@ void fillHolesInGraph(const std::vector<std::vector<ImageSegmentation::Node*>>& 
         if (flood.at<uchar>(m - 1, j) == 0)
             cv::floodFill(flood, cv::Point(j, m - 1), 128);
     }
+
+    // Now flood==0 are holes (enclosed background). We will find connected
+    // components of these holes and fill only those smaller than ignoreHoleSize.
+    if (ignoreHoleSize <= 0) {
+        // old behavior: fill all holes
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                if (flood.at<uchar>(i, j) == 0) {
+                    ImageSegmentation::Node* node = pixelNodes[i][j];
+                    visited[node->id] = true;
+                }
+            }
+        }
+        return;
+    }
+
+    std::vector<std::vector<char>> seen(m, std::vector<char>(n, 0));
+    int dr[4] = { -1, 1, 0, 0 };
+    int dc[4] = { 0, 0, -1, 1 };
+
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < n; j++) {
-            if (flood.at<uchar>(i, j) == 0) {
-                ImageSegmentation::Node* node = pixelNodes[i][j];
-                visited[node->id] = true;
+            if (flood.at<uchar>(i, j) != 0 || seen[i][j])
+                continue; // not a hole pixel or already processed
+
+            // BFS to collect this hole component
+            std::vector<std::pair<int,int>> comp;
+            std::queue<std::pair<int,int>> q;
+            q.push({i,j});
+            seen[i][j] = 1;
+
+            while (!q.empty()) {
+                auto p = q.front(); q.pop();
+                comp.push_back(p);
+                int r = p.first, c = p.second;
+                for (int d = 0; d < 4; d++) {
+                    int nr = r + dr[d];
+                    int nc = c + dc[d];
+                    if (nr >= 0 && nr < m && nc >= 0 && nc < n) {
+                        if (!seen[nr][nc] && flood.at<uchar>(nr, nc) == 0) {
+                            seen[nr][nc] = 1;
+                            q.push({nr, nc});
+                        }
+                    }
+                }
             }
+
+            // If component area smaller than threshold, fill it (mark visited)
+            if (static_cast<int>(comp.size()) < ignoreHoleSize) {
+                for (const auto &pos : comp) {
+                    int r = pos.first, c = pos.second;
+                    ImageSegmentation::Node* node = pixelNodes[r][c];
+                    visited[node->id] = true;
+                }
+            }
+            // otherwise leave as hole (do not set visited)
         }
     }
 }
@@ -946,7 +999,9 @@ bool ImageSegmentation::segmentImage(const cv::Mat& input,
     std::vector<bool> visited(maxNodeId, false);
     getSegmentationCut(data.graph, visited, maxNodeId);
 
-    fillHolesInGraph(data.pixelNodes, visited, data.m, data.n);
+    // fill holes smaller than UI-configured size; if spinBox value is 0 or negative,
+    // all holes will be filled (backwards compatible)
+    fillHolesInGraph(data.pixelNodes, visited, data.m, data.n, ui.spinBoxHoleSize->value());
     removeNoiseFromGraph(data.pixelNodes, visited, threshold);
 
     // Vytvor vystupne obrazky pre objekt a hrany
