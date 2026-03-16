@@ -2,3 +2,8 @@ x64
 /ImageSegmentation
 .vs
 /build
+/ImageSegmentation/ImageSegmentation.vcxproj
+/ImageSegmentation/ImageSegmentation.h
+/ImageSegmentation/ImageSegmentation.cpp
+/ImageSegmentation/ImageSegmentation.ui
+/ImageSegmentation/ImageSegmentationMath.cpp
