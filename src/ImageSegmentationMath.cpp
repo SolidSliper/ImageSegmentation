@@ -78,42 +78,59 @@ cv::Mat ImageSegmentation::annotateImage(const cv::Mat& img, double areaObject, 
     return img;
 }
 
-// fillHolesInGraph: Zaplni diery v segmentacii objektu pomocou flood fill.
+// fillHolesInGraph: Zaplni diery v segmentacii objektu bez pouzitia cv::floodFill.
+// Implementacia: vytvori binarnu masku foreground/background (visited=true => foreground),
+// potom BFS z border pixelov pre najdenie background pixelov spojonych na okraj.
+// Pixel, ktory nie je foreground a nie je spojeny s okrajom je "diera". Dierky
+// su spojite komponenty tychto pixelov; tie mensie nez ignoreHoleSize sa zaplnia.
 void fillHolesInGraph(const std::vector<std::vector<ImageSegmentation::Node*>>& pixelNodes,
     std::vector<bool>& visited, int m, int n, int ignoreHoleSize)
 {
-    // Create mask of visited pixels (foreground) and flood-fill from borders
-    cv::Mat mask = cv::Mat::zeros(m, n, CV_8UC1);
-    for (int i = 0; i < m; i++) {
-        for (int j = 0; j < n; j++) {
+    // Create binary mask: 1 = foreground (visited), 0 = background
+    std::vector<std::vector<char>> mask(m, std::vector<char>(n, 0));
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j < n; ++j) {
             ImageSegmentation::Node* node = pixelNodes[i][j];
-            if (visited[node->id])
-                mask.at<uchar>(i, j) = 255;
+            mask[i][j] = visited[node->id] ? 1 : 0;
         }
     }
 
-    // flood contains areas connected to border (background that is not hole)
-    cv::Mat flood = mask.clone();
-    for (int i = 0; i < m; i++) {
-        if (flood.at<uchar>(i, 0) == 0)
-            cv::floodFill(flood, cv::Point(0, i), 128);
-        if (flood.at<uchar>(i, n - 1) == 0)
-            cv::floodFill(flood, cv::Point(n - 1, i), 128);
+    // Find background pixels connected to border using BFS
+    std::vector<std::vector<char>> bgConnected(m, std::vector<char>(n, 0));
+    std::queue<std::pair<int,int>> q;
+    // push all border background pixels
+    for (int i = 0; i < m; ++i) {
+        if (mask[i][0] == 0) { bgConnected[i][0] = 1; q.push({i,0}); }
+        if (n > 1 && mask[i][n-1] == 0) { bgConnected[i][n-1] = 1; q.push({i,n-1}); }
     }
-    for (int j = 0; j < n; j++) {
-        if (flood.at<uchar>(0, j) == 0)
-            cv::floodFill(flood, cv::Point(j, 0), 128);
-        if (flood.at<uchar>(m - 1, j) == 0)
-            cv::floodFill(flood, cv::Point(j, m - 1), 128);
+    for (int j = 0; j < n; ++j) {
+        if (mask[0][j] == 0) { bgConnected[0][j] = 1; q.push({0,j}); }
+        if (m > 1 && mask[m-1][j] == 0) { bgConnected[m-1][j] = 1; q.push({m-1,j}); }
     }
 
-    // Now flood==0 are holes (enclosed background). We will find connected
-    // components of these holes and fill only those smaller than ignoreHoleSize.
+    int dr[4] = { -1, 1, 0, 0 };
+    int dc[4] = { 0, 0, -1, 1 };
+    while (!q.empty()) {
+        auto p = q.front(); q.pop();
+        int r = p.first, c = p.second;
+        for (int d = 0; d < 4; ++d) {
+            int nr = r + dr[d];
+            int nc = c + dc[d];
+            if (nr >= 0 && nr < m && nc >= 0 && nc < n) {
+                if (!bgConnected[nr][nc] && mask[nr][nc] == 0) {
+                    bgConnected[nr][nc] = 1;
+                    q.push({nr,nc});
+                }
+            }
+        }
+    }
+
+    // Now pixels with mask==0 && bgConnected==0 are holes (enclosed background).
+    // If ignoreHoleSize <= 0 fill all holes directly.
     if (ignoreHoleSize <= 0) {
-        // old behavior: fill all holes
-        for (int i = 0; i < m; i++) {
-            for (int j = 0; j < n; j++) {
-                if (flood.at<uchar>(i, j) == 0) {
+        for (int i = 0; i < m; ++i) {
+            for (int j = 0; j < n; ++j) {
+                if (mask[i][j] == 0 && !bgConnected[i][j]) {
                     ImageSegmentation::Node* node = pixelNodes[i][j];
                     visited[node->id] = true;
                 }
@@ -122,46 +139,36 @@ void fillHolesInGraph(const std::vector<std::vector<ImageSegmentation::Node*>>& 
         return;
     }
 
+    // Find connected components among hole pixels and fill those smaller than threshold
     std::vector<std::vector<char>> seen(m, std::vector<char>(n, 0));
-    int dr[4] = { -1, 1, 0, 0 };
-    int dc[4] = { 0, 0, -1, 1 };
-
-    for (int i = 0; i < m; i++) {
-        for (int j = 0; j < n; j++) {
-            if (flood.at<uchar>(i, j) != 0 || seen[i][j])
-                continue; // not a hole pixel or already processed
-
-            // BFS to collect this hole component
-            std::vector<std::pair<int,int>> comp;
-            std::queue<std::pair<int,int>> q;
-            q.push({i,j});
-            seen[i][j] = 1;
-
-            while (!q.empty()) {
-                auto p = q.front(); q.pop();
-                comp.push_back(p);
-                int r = p.first, c = p.second;
-                for (int d = 0; d < 4; d++) {
-                    int nr = r + dr[d];
-                    int nc = c + dc[d];
-                    if (nr >= 0 && nr < m && nc >= 0 && nc < n) {
-                        if (!seen[nr][nc] && flood.at<uchar>(nr, nc) == 0) {
-                            seen[nr][nc] = 1;
-                            q.push({nr, nc});
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j < n; ++j) {
+            if (mask[i][j] == 0 && !bgConnected[i][j] && !seen[i][j]) {
+                std::vector<std::pair<int,int>> comp;
+                std::queue<std::pair<int,int>> q2;
+                q2.push({i,j}); seen[i][j] = 1;
+                while (!q2.empty()) {
+                    auto pp = q2.front(); q2.pop();
+                    comp.push_back(pp);
+                    int r = pp.first, c = pp.second;
+                    for (int d = 0; d < 4; ++d) {
+                        int nr = r + dr[d];
+                        int nc = c + dc[d];
+                        if (nr >= 0 && nr < m && nc >= 0 && nc < n) {
+                            if (!seen[nr][nc] && mask[nr][nc] == 0 && !bgConnected[nr][nc]) {
+                                seen[nr][nc] = 1;
+                                q2.push({nr,nc});
+                            }
                         }
                     }
                 }
-            }
-
-            // If component area smaller than threshold, fill it (mark visited)
-            if (static_cast<int>(comp.size()) < ignoreHoleSize) {
-                for (const auto &pos : comp) {
-                    int r = pos.first, c = pos.second;
-                    ImageSegmentation::Node* node = pixelNodes[r][c];
-                    visited[node->id] = true;
+                if (static_cast<int>(comp.size()) < ignoreHoleSize) {
+                    for (auto &pos : comp) {
+                        ImageSegmentation::Node* node = pixelNodes[pos.first][pos.second];
+                        visited[node->id] = true;
+                    }
                 }
             }
-            // otherwise leave as hole (do not set visited)
         }
     }
 }
@@ -1017,10 +1024,10 @@ bool ImageSegmentation::segmentImage(const cv::Mat& input,
     }
 
     // Morphologia: open a close pre zjemnenie masky
-    cv::Mat kernelOpen = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::Mat kernelClose = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
-    cv::morphologyEx(objectMask, objectMask, cv::MORPH_OPEN, kernelOpen);
-    cv::morphologyEx(objectMask, objectMask, cv::MORPH_CLOSE, kernelClose);
+    //cv::Mat kernelOpen = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    //cv::Mat kernelClose = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
+    //cv::morphologyEx(objectMask, objectMask, cv::MORPH_OPEN, kernelOpen);
+    //cv::morphologyEx(objectMask, objectMask, cv::MORPH_CLOSE, kernelClose);
 
     // Nastav rezim a uloz poslednu masku
     isLightObject = (data.actualMode == SegmentationMode::Light);

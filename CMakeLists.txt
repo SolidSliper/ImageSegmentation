@@ -1,5 +1,5 @@
-# Tu nastavit verziu Qt6
-set(Qt6_Version 6.8.2)
+# Here set version of Qt6
+set(Qt6_Version 6.11.0)
 
 cmake_minimum_required(VERSION 3.16.0)
 
@@ -16,20 +16,16 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-set(Qt6_DIR "D:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6")
-set(Qt6WidgetsTools_DIR "D:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6WidgetsTools")
-set(Qt6CoreTools_DIR "D:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6CoreTools")
-set(Qt6GuiTools_DIR "D:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6GuiTools")
+set(Qt6_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6")
+set(Qt6WidgetsTools_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6WidgetsTools")
+set(Qt6CoreTools_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6CoreTools")
+set(Qt6GuiTools_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6GuiTools")
 
 find_package(Qt6 COMPONENTS Widgets Core Gui REQUIRED)
 
 # Specify OpenCV package location and find it
-set(OpenCV_DIR "D:/prog/opencv4.1.2/opencv/build")
+set(OpenCV_DIR "lib/opencv4.1.2/opencv/build/x64/vc16/lib")
 find_package(OpenCV REQUIRED)
-
-# Add OpenCV include directories and link libraries to the target
-# Use target-based commands so the include paths and libs are applied only to the executable
-
 
 file(GLOB UI_FILES src/*.ui)
 file(GLOB H_FILES src/*.h)
@@ -41,7 +37,10 @@ set(SOURCE_LIST ${CPP_FILES} ${UI_FILES} ${H_FILES} ${QRC_FILES})
 add_executable(${PROJECT_NAME} ${SOURCE_LIST})
 
 # Apply OpenCV include directories to the target
-target_include_directories(${PROJECT_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
 
 # Link Qt and OpenCV libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -53,11 +52,19 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SOURCE_LIST})
 
-# Deploy Qt using your existing windeployqt command
+# Deploy Qt using windeployqt 
 add_custom_command(TARGET ${PROJECT_NAME}
     POST_BUILD
-    COMMAND "D:/prog/Qt/${Qt6_Version}/msvc2022_64/bin/windeployqt.exe" "$<TARGET_FILE:${PROJECT_NAME}>"
+    COMMAND "E:/prog/Qt/${Qt6_Version}/msvc2022_64/bin/windeployqt.exe" "$<TARGET_FILE:${PROJECT_NAME}>"
     COMMENT "Win deploy qt"
+)
+
+# Copy OpenCV DLL to output directory after build
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/opencv4.1.2/opencv/build/x64/vc16/bin/$<IF:$<CONFIG:Debug>,opencv_world4120d.dll,opencv_world4120.dll>"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMENT "Copying OpenCV DLL"
 )
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})

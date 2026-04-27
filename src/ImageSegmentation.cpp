@@ -169,7 +169,7 @@ cv::Mat ImageSegmentation::applyROIMask(const cv::Mat& input)
     return removeInfoOverlay(input);
 }
 
-// Odstrani spodnych 10% obrazka ako informacny overlay
+// Odstrani informacny overlay
 cv::Mat ImageSegmentation::removeInfoOverlay(const cv::Mat& input)
 {
     int overlayHeight = input.rows / 9;
@@ -200,7 +200,8 @@ void ImageSegmentation::runSegmentation()
     }
 
     qint64 elapsedMs = segTimer.elapsed();
-    qDebug() << "Segmentation time:" << elapsedMs << "ms";
+    qDebug() << "Segmentation time:" << elapsedMs / 1000.0 << "s";
+	ui.labelSegTime->setText(QString("Segmentation time: %1 s").arg(elapsedMs / 1000.0, 0, 'f', 2));
 
     // ulozenie vystupnych obrazkov a statistiky
     outputObjectImage = outObj;
@@ -212,29 +213,24 @@ void ImageSegmentation::runSegmentation()
     ui.labelObjectArea->setText(QString("%1 %").arg(perc, 0, 'f', 2));
 
     // vypocet geometrickych parametrov
-    {
-        double longestFeret = 0.0, shortestFeret = 0.0, circleDiameter = 0.0;
-        computeFeretDiameterAndCircle(inputImage, mask,
+
+    double longestFeret = 0.0, shortestFeret = 0.0, circleDiameter = 0.0;
+    computeFeretDiameterAndCircle(inputImage, mask,
             outputFeretImage,
             longestFeret,
             circleDiameter,
             shortestFeret);
-        /*ui.labelFeretResults->setText(QString("Feret diameters: %1 / %2, Circle diameter: %3")
-            .arg(longestFeret, 0, 'f', 2)
-            .arg(shortestFeret, 0, 'f', 2)
-            .arg(circleDiameter, 0, 'f', 2));*/
-    }
-    {
-        double majorAxis = 0.0, minorAxis = 0.0;
-        computeLegendreEllipse(inputImage, mask, outputEllipseImage, majorAxis, minorAxis);
-    }
-    {
-        double longDiameter = 0.0, shortDiameter = 0.0;
-        computeMBR(inputImage, mask, outputMBRImage, longDiameter, shortDiameter);
-    }
+    double majorAxis = 0.0, minorAxis = 0.0;
+    computeLegendreEllipse(inputImage, mask, outputEllipseImage, majorAxis, minorAxis);
+
+    double longDiameter = 0.0, shortDiameter = 0.0;
+    computeMBR(inputImage, mask, outputMBRImage, longDiameter, shortDiameter);
 
     lastObjectMask = mask;
     lastIsLightObject = isLight;
+
+    // zobrazenie 
+    on_actionEdge_triggered();
 }
 
  //Interaktivny vyber ROI pomocou mysich udalosti
@@ -361,7 +357,7 @@ bool ImageSegmentation::eventFilter(QObject* obj, QEvent* event)
 // Akcie pre menu Subor: otvorenie, ulozenie, atd.
 void ImageSegmentation::on_actionOpen_triggered()
 {
-    QString filename = QFileDialog::getOpenFileName(this, "Open Image", "D:/article/military-data-2026/archive(1)/MilitaryHelicopterDataSet",
+    QString filename = QFileDialog::getOpenFileName(this, "Open Image", "D:/stu/bachelor/Kopani vyber Fe castica/",
         "Image Files (*.png *.jpg *.tif)");
     if (filename.isEmpty())
         return;
@@ -419,7 +415,7 @@ void ImageSegmentation::on_actionSave_triggered()
     QString defaultName = loadedImageName.isEmpty() ? "output_overlay" : loadedImageName + "_overlay";
     QString filename = QFileDialog::getSaveFileName(this,
         "Save Image with Overlays",
-        "D:/article/military-data-2026/Images/Helicopter/" + defaultName + ".tif",
+        "D:/stu/bachelor/Kopani vyber Fe castica/" + defaultName + ".tif",
         "TIF Image (*.tif)");
     if (filename.isEmpty())
         return;
