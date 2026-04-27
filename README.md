@@ -79,13 +79,9 @@ src/
 └── ImageSegmentation.qrc          # Qt resources
 ```
 
-The split between `ImageSegmentation.cpp` (UI / I/O) and `ImageSegmentationMath.cpp` (compute, no Qt dependency) is intentional — it keeps the algorithmic core testable and decoupled from the GUI.
-
 ## Roadmap
 
 Goals are tracked in parallel rather than sequentially — none of them blocks the others.
-
-### Done
 
 - [x] Graph construction from grayscale images with regional + boundary energy terms
 - [x] Dinic's max-flow / min-cut implementation
@@ -99,11 +95,8 @@ Goals are tracked in parallel rather than sequentially — none of them blocks t
 - [x] Batch folder processing
 - [x] CSV export of measurements
 - [x] Validation against manual Fiji masks (Dice 0.979, IoU 0.961)
-
-### Planned
-
-- [ ] **Refactor the project into proper modules** — split `ImageSegmentationMath.cpp` into separate translation units (graph, max-flow, post-processing, geometry) with clean headers.
-- [ ] **Deep learning for automated ROI marking** — use a lightweight segmentation model to propose seed points and ROI automatically, removing the manual seeding step.
+- [ ] **Refactor the project** into proper modules.
+- [ ] **Deep learning** for automated ROI marking — use a lightweight segmentation model to propose seed points and ROI automatically, removing the manual seeding step.
 - [ ] **GPU parallelization** of the max-flow computation — the current bottleneck on high-resolution images is memory and the sequential nature of BFS phases. Investigate push-relabel variants suitable for CUDA / OpenCL.
 - [ ] **First alpha release** — portable Windows build (no installer, just a zipped folder with the executable + Qt/OpenCV runtime DLLs).
 - [ ] **Stable release with a proper Windows installer** (NSIS or Inno Setup).
