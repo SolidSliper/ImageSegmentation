@@ -1,52 +1,61 @@
-﻿#include "ImageSegmentation.h"
-//#include "ImageSegmentationMath.cpp"
+#include "ImageSegmentation.h"
+#include "ImageIO.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QInputDialog>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QTextStream>
+#include <QFileInfo>
+#include <QDir>
 
-// Konstruktor, destruktor a inicializacia UI
+// ============================================================================
+// Konstruktor / destruktor
+// ============================================================================
 ImageSegmentation::ImageSegmentation(QWidget* parent)
     : QMainWindow(parent)
 {
     ui.setupUi(this);
-    // Pridanie tlacidiel pre rezimy Light, Dark, Auto do skupiny
-    modeButtonGroup.addButton(ui.toolButtonLight, static_cast<int>(SegmentationMode::Light));
-    modeButtonGroup.addButton(ui.toolButtonDark, static_cast<int>(SegmentationMode::Dark));
-    modeButtonGroup.addButton(ui.toolButtonAuto, static_cast<int>(SegmentationMode::Auto));
-    // Pri kliknuti na tlacidlo prepni rezim a prepocitaj seed intenzity
+
+    // Tlacitka rezimu - mapovanie na enum
+    modeButtonGroup.addButton(ui.toolButtonLight, static_cast<int>(Segmentation::Mode::Light));
+    modeButtonGroup.addButton(ui.toolButtonDark,  static_cast<int>(Segmentation::Mode::Dark));
+    modeButtonGroup.addButton(ui.toolButtonAuto,  static_cast<int>(Segmentation::Mode::Auto));
+
     connect(&modeButtonGroup, QOverload<QAbstractButton*>::of(&QButtonGroup::buttonClicked),
-        [this](QAbstractButton* button)
-        {
-            currentMode = static_cast<SegmentationMode>(modeButtonGroup.id(button));
-            updateSeedIntensities();
-        });
+            [this](QAbstractButton* button) {
+                currentMode = static_cast<Segmentation::Mode>(modeButtonGroup.id(button));
+                updateSeedIntensities();
+            });
 
     connect(ui.toolButtonSelectROICustom, &QToolButton::toggled,
-        this, &ImageSegmentation::on_toolButtonSelectROICustom_toggled);
+            this, &ImageSegmentation::on_toolButtonSelectROICustom_toggled);
 
-    ui.toolButtonLight->setChecked(true); // predvoleny rezim
-    // Prepojenie spinboxov na zmenu parametrov
-    connect(ui.doubleSpinBoxLambda, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-        [this](double val) { lambda = val; });
-    connect(ui.doubleSpinBoxScale, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-        [this](double val) { scaleFactor = val; });
+    ui.toolButtonLight->setChecked(true);
+
+    // Spinboxy pre parametre
+    connect(ui.doubleSpinBoxLambda,    QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            [this](double val) { lambda = val; });
+    connect(ui.doubleSpinBoxScale,     QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            [this](double val) { scaleFactor = val; });
     connect(ui.doubleSpinBoxPixelSize, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-        [this](double val) { pixelSizeNm = val; });
-    connect(ui.spinBoxThreshold, QOverload<int>::of(&QSpinBox::valueChanged),
-        [this](double val) { threshold = val; });
-    // Nainstalovanie event filteru na label pre ROI vyber
+            [this](double val) { pixelSizeNm = val; });
+    connect(ui.spinBoxThreshold,       QOverload<int>::of(&QSpinBox::valueChanged),
+            [this](int val) { threshold = val; });
+
     ui.imageLabel->installEventFilter(this);
 }
 
-// Destruktor
-ImageSegmentation::~ImageSegmentation() {}
+ImageSegmentation::~ImageSegmentation() = default;
 
-// Vycisti vsetky interni data pri otvoreni noveho obrazka
+// ============================================================================
+// Pomocne UI metody
+// ============================================================================
+
 void ImageSegmentation::clearAllData()
 {
-    // Release image mats
     inputImage.release();
     outputObjectImage.release();
     outputEdgeImage.release();
@@ -56,22 +65,20 @@ void ImageSegmentation::clearAllData()
     lastObjectMask.release();
     userROIMask.release();
 
-    // Reset numeric/state variables
     segmentedObjectArea = 0;
-    imageArea = 0;
-    userObject = 0;
-    userBackground = 0;
-    lastIsLightObject = true;
+    imageArea           = 0;
+    userObject          = 0;
+    userBackground      = 0;
+    lastIsLightObject   = true;
+
     roiPolygonPoints.clear();
     polygonSelectionActive = false;
-    roiSelectionActive = false;
-    roiFirstPointSet = false;
+    roiSelectionActive     = false;
+    roiFirstPointSet       = false;
 
-    // Reset UI related state
     loadedImageName.clear();
     currentDisplay = QImage();
 
-    // Reset tool buttons and UI fields
     ui.toolButtonSelectROIRectangle->setChecked(false);
     ui.toolButtonSelectROICustom->setChecked(false);
     ui.toolButtonLight->setChecked(true);
@@ -81,504 +88,404 @@ void ImageSegmentation::clearAllData()
     ui.doubleSpinBoxObject->setValue(0);
     ui.doubleSpinBoxBackground->setValue(0);
 
-    // Clear display
     ui.imageLabel->clear();
 }
 
-// Prevod cv::Mat na QImage, podporuje jednokanálovy aj trojkanálovy mat
-QImage ImageSegmentation::cvMatToQImage(const cv::Mat& mat)
-{
-    if (mat.empty())
-        return QImage();
-
-    switch (mat.type()) {
-    case CV_8UC1: {
-        // sivy obrazok
-        QImage img(mat.data, mat.cols, mat.rows, mat.step, QImage::Format_Grayscale8);
-        return img.copy();
-    }
-    case CV_8UC3: {
-        // farebny obrazok BGR -> RGB
-        cv::Mat tmp;
-        cv::cvtColor(mat, tmp, cv::COLOR_BGR2RGB);
-        QImage img(tmp.data, tmp.cols, tmp.rows, tmp.step, QImage::Format_RGB888);
-        return img.copy();
-    }
-    default:
-        // preved na sivy
-        cv::Mat grey;
-        mat.convertTo(grey, CV_8U);
-        QImage img(grey.data, grey.cols, grey.rows, grey.step, QImage::Format_Grayscale8);
-        return img.copy();
-    }
-}
-
-// Konverzia QImage -> cv::Mat. Vrati kopiu (bez vlastnenia pamate QImage).
-cv::Mat ImageSegmentation::QImageToCvMat(const QImage& image)
-{
-    if (image.isNull())
-        return cv::Mat();
-
-    switch (image.format()) {
-    case QImage::Format_Grayscale8: {
-        return cv::Mat(image.height(), image.width(), CV_8UC1,
-            const_cast<uchar*>(image.constBits()), image.bytesPerLine()).clone();
-    }
-    case QImage::Format_RGB888: {
-        // QImage RGB888 is stored as RGB; convert to BGR for OpenCV
-        cv::Mat tmp(image.height(), image.width(), CV_8UC3,
-            const_cast<uchar*>(image.constBits()), image.bytesPerLine());
-        cv::Mat mat;
-        cv::cvtColor(tmp, mat, cv::COLOR_RGB2BGR);
-        return mat;
-    }
-    case QImage::Format_ARGB32:
-    case QImage::Format_ARGB32_Premultiplied:
-    case QImage::Format_RGBA8888:
-    case QImage::Format_RGBA8888_Premultiplied: {
-        // Keep 4 channels (BGRA/ARGB layout depends on endianness); return 4-channel image
-        cv::Mat tmp(image.height(), image.width(), CV_8UC4,
-            const_cast<uchar*>(image.constBits()), image.bytesPerLine());
-        return tmp.clone();
-    }
-    default: {
-        // Fallback: convert to ARGB32 and return 4-channel copy
-        QImage conv = image.convertToFormat(QImage::Format_ARGB32);
-        cv::Mat tmp(conv.height(), conv.width(), CV_8UC4,
-            const_cast<uchar*>(conv.constBits()), conv.bytesPerLine());
-        return tmp.clone();
-    }
-    }
-}
-
-// Zobrazenie obrazka v labeli, aplikacia mierky a zachovanie pomeru stran
 void ImageSegmentation::displayImage(const QImage& img)
 {
     if (img.isNull()) return;
     QImage scaledImg = img.scaled(img.size() * scaleFactor,
-        Qt::KeepAspectRatio,
-        Qt::SmoothTransformation);
+                                  Qt::KeepAspectRatio,
+                                  Qt::SmoothTransformation);
     ui.imageLabel->setPixmap(QPixmap::fromImage(scaledImg));
 }
 
-// Vratenie ROI masky: pouzije uzivatelovu, ak existuje; inak odstranenie overlay
 cv::Mat ImageSegmentation::applyROIMask(const cv::Mat& input)
 {
     if (!userROIMask.empty())
         return userROIMask;
-    return removeInfoOverlay(input);
+    return ImageIO::removeInfoOverlay(input);
 }
 
-// Odstrani informacny overlay
-cv::Mat ImageSegmentation::removeInfoOverlay(const cv::Mat& input)
+Segmentation::Params ImageSegmentation::buildParams() const
 {
-    int overlayHeight = input.rows / 9;
-    cv::Rect cropRect(0, 0, input.cols, input.rows - overlayHeight);
-    return input(cropRect).clone();
+    Segmentation::Params p;
+    p.mode             = currentMode;
+    p.algorithm        = (ui.comboBoxAlgorithm->currentText() == "Dinic")
+                             ? Segmentation::Algorithm::Dinic
+                             : Segmentation::Algorithm::EdmondsKarp;
+    p.lambda           = lambda;
+    p.userObject       = userObject;
+    p.userBackground   = userBackground;
+    p.noiseThreshold   = threshold;
+    p.holeSize         = ui.spinBoxHoleSize->value();
+    return p;
 }
 
-// Hlavny wrapper pre segmentaciu, spracuje vystupy a vykresli statistiky
+void ImageSegmentation::updateSeedIntensities()
+{
+    if (inputImage.empty()) return;
+
+    const cv::Mat& mask = userROIMask.empty() ? cv::Mat() : userROIMask;
+    Segmentation::computeSeedIntensities(inputImage, currentMode,
+                                         defaultObjectIntensity,
+                                         defaultBackgroundIntensity,
+                                         mask);
+    ui.doubleSpinBoxObject->setValue(defaultObjectIntensity);
+    ui.doubleSpinBoxBackground->setValue(defaultBackgroundIntensity);
+}
+
 void ImageSegmentation::runSegmentation()
 {
-    // ziskanie hodnot od uzivatela
-    userObject = ui.doubleSpinBoxObject->value();
+    userObject     = ui.doubleSpinBoxObject->value();
     userBackground = ui.doubleSpinBoxBackground->value();
 
-    cv::Mat outObj, outEdge, mask;
-    bool isLight;
-    cv::Mat roiApplied = applyROIMask(inputImage);
+    // Default ROI on whole image    
+    int imgWidth = inputImage.size().width;
+    int imgHeight = inputImage.size().height;
+    cv::Rect roiRect(0, 0, imgWidth - 1, imgHeight - 1);
+    userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
+    userROIMask(roiRect).setTo(255);
 
-    // meranie casu segmentacie
     QElapsedTimer segTimer;
     segTimer.start();
 
-    // volanie segmentacnej funkcie
-    if (!segmentImage(inputImage, currentMode, lambda,
-        outObj, outEdge, mask, isLight, roiApplied)) {
+    Segmentation::Result result;
+    if (!Segmentation::segmentImage(inputImage, buildParams(), result, userROIMask)) {
         QMessageBox::warning(this, "Segmentation", "Segmentation failed");
         return;
     }
 
     qint64 elapsedMs = segTimer.elapsed();
     qDebug() << "Segmentation time:" << elapsedMs / 1000.0 << "s";
-	ui.labelSegTime->setText(QString("Segmentation time: %1 s").arg(elapsedMs / 1000.0, 0, 'f', 2));
+    ui.labelSegTime->setText(QString("Segmentation time: %1 s")
+                                 .arg(elapsedMs / 1000.0, 0, 'f', 2));
 
-    // ulozenie vystupnych obrazkov a statistiky
-    outputObjectImage = outObj;
-    outputEdgeImage = outEdge;
-    segmentedObjectArea = cv::countNonZero(mask);
+    outputObjectImage   = result.objectImage;
+    outputEdgeImage     = result.edgeImage;
+    lastObjectMask      = result.objectMask;
+    lastIsLightObject   = result.isLightObject;
+
+    segmentedObjectArea = cv::countNonZero(lastObjectMask);
     ui.spinBoxObjectArea->setValue(segmentedObjectArea);
     imageArea = inputImage.rows * inputImage.cols;
     double perc = static_cast<double>(segmentedObjectArea) / imageArea * 100.0;
     ui.labelObjectArea->setText(QString("%1 %").arg(perc, 0, 'f', 2));
 
-    // vypocet geometrickych parametrov
-
+    // Geometricke parametre
     double longestFeret = 0.0, shortestFeret = 0.0, circleDiameter = 0.0;
-    computeFeretDiameterAndCircle(inputImage, mask,
-            outputFeretImage,
-            longestFeret,
-            circleDiameter,
-            shortestFeret);
+    Segmentation::computeFeretDiameterAndCircle(inputImage, lastObjectMask,
+                                                outputFeretImage,
+                                                longestFeret, circleDiameter,
+                                                shortestFeret);
+
     double majorAxis = 0.0, minorAxis = 0.0;
-    computeLegendreEllipse(inputImage, mask, outputEllipseImage, majorAxis, minorAxis);
+    Segmentation::computeLegendreEllipse(inputImage, lastObjectMask,
+                                         outputEllipseImage,
+                                         majorAxis, minorAxis);
 
     double longDiameter = 0.0, shortDiameter = 0.0;
-    computeMBR(inputImage, mask, outputMBRImage, longDiameter, shortDiameter);
+    Segmentation::computeMBR(inputImage, lastObjectMask, outputMBRImage,
+                             longDiameter, shortDiameter);
 
-    lastObjectMask = mask;
-    lastIsLightObject = isLight;
-
-    // zobrazenie 
     on_actionEdge_triggered();
 }
 
- //Interaktivny vyber ROI pomocou mysich udalosti
+// ============================================================================
+// Event filter - vyber ROI mysou
+// ============================================================================
 bool ImageSegmentation::eventFilter(QObject* obj, QEvent* event)
 {
-    if (obj == ui.imageLabel) {
-        if (event->type() == QEvent::MouseButtonPress) {
-            QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
-            QPoint pos = mouseEvent->pos();
-            // ak nie je pixmapa, nic nechytaj
-            if (!ui.imageLabel->pixmap())
-                return QMainWindow::eventFilter(obj, event);
-            QPixmap pixmap = ui.imageLabel->pixmap();
-            QSize pixSize = pixmap.size();
-            QSize labelSize = ui.imageLabel->size();
-            // vypocet offsetu pre centrovanie
-            int offsetX = (labelSize.width() - pixSize.width()) / 2;
-            int offsetY = (labelSize.height() - pixSize.height()) / 2;
-            int relativeX = pos.x() - offsetX;
-            int relativeY = pos.y() - offsetY;
-            // mimo obrazka ignoruj
-            if (relativeX < 0 || relativeY < 0 || relativeX >= pixSize.width() || relativeY >= pixSize.height())
-                return true;
-            // prevod na povodne suradnice
-            double scale = static_cast<double>(pixSize.width()) / inputImage.cols;
-            int origX = static_cast<int>(relativeX / scale);
-            int origY = static_cast<int>(relativeY / scale);
+    if (obj != ui.imageLabel || event->type() != QEvent::MouseButtonPress)
+        return QMainWindow::eventFilter(obj, event);
 
-            // Rectangle ROI selection
-            if (roiSelectionActive) {
-                if (!roiFirstPointSet) {
-                    // nastav prvy bod
-                    roiFirstPoint = cv::Point(origX, origY);
-                    roiFirstPointSet = true;
-                }
-                else {
-                    // nastav druhy bod a vytvor masku
-                    roiSecondPoint = cv::Point(origX, origY);
-                    int rx = std::min(roiFirstPoint.x, roiSecondPoint.x);
-                    int ry = std::min(roiFirstPoint.y, roiSecondPoint.y);
-                    int rw = std::abs(roiFirstPoint.x - roiSecondPoint.x);
-                    int rh = std::abs(roiFirstPoint.y - roiSecondPoint.y);
-                    cv::Rect roiRect(rx, ry, rw, rh);
-                    userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
-                    userROIMask(roiRect).setTo(255);
-                    // vykresli ramec pre vizualizaciu ROI
-                    cv::Mat displayImage;
-                    if (inputImage.channels() == 1)
-                        cv::cvtColor(inputImage, displayImage, cv::COLOR_GRAY2BGR);
-                    else
-                        displayImage = inputImage.clone();
-                    cv::rectangle(displayImage, roiRect, cv::Scalar(144, 238, 144), 2);
-                    outputFeretImage = displayImage.clone();
-                    outputEllipseImage = displayImage.clone();
-                    outputMBRImage = displayImage.clone();
-                    // ukonci rezim vyberu
-                    roiSelectionActive = false;
-                    roiFirstPointSet = false;
-                    ui.toolButtonSelectROIRectangle->setChecked(false);
+    QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
+    QPoint pos = mouseEvent->pos();
 
-                }
-                return true;
+    if (!ui.imageLabel->pixmap())
+        return QMainWindow::eventFilter(obj, event);
+
+    QPixmap pixmap = ui.imageLabel->pixmap();
+    QSize pixSize   = pixmap.size();
+    QSize labelSize = ui.imageLabel->size();
+    int offsetX = (labelSize.width()  - pixSize.width())  / 2;
+    int offsetY = (labelSize.height() - pixSize.height()) / 2;
+    int relativeX = pos.x() - offsetX;
+    int relativeY = pos.y() - offsetY;
+
+    if (relativeX < 0 || relativeY < 0 ||
+        relativeX >= pixSize.width() || relativeY >= pixSize.height())
+        return true;
+
+    double scale = static_cast<double>(pixSize.width()) / inputImage.cols;
+    int origX = static_cast<int>(relativeX / scale);
+    int origY = static_cast<int>(relativeY / scale);
+
+    // Rectangle ROI
+    if (roiSelectionActive) {
+        if (!roiFirstPointSet) {
+            roiFirstPoint    = cv::Point(origX, origY);
+            roiFirstPointSet = true;
+        } else {
+            roiSecondPoint = cv::Point(origX, origY);
+            int rx = std::min(roiFirstPoint.x, roiSecondPoint.x);
+            int ry = std::min(roiFirstPoint.y, roiSecondPoint.y);
+            int rw = std::abs(roiFirstPoint.x - roiSecondPoint.x);
+            int rh = std::abs(roiFirstPoint.y - roiSecondPoint.y);
+            cv::Rect roiRect(rx, ry, rw, rh);
+            userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
+            userROIMask(roiRect).setTo(255);
+
+            cv::Mat displayMat;
+            if (inputImage.channels() == 1)
+                cv::cvtColor(inputImage, displayMat, cv::COLOR_GRAY2BGR);
+            else
+                displayMat = inputImage.clone();
+            cv::rectangle(displayMat, roiRect, cv::Scalar(144, 238, 144), 2);
+
+            QImage qImage = ImageIO::cvMatToQImage(displayMat);
+            currentDisplay = qImage;
+            displayImage(qImage);
+
+            /*outputFeretImage   = displayMat.clone();
+            outputEllipseImage = displayMat.clone();
+            outputMBRImage     = displayMat.clone();*/
+
+            roiSelectionActive = false;
+            roiFirstPointSet   = false;
+            ui.toolButtonSelectROIRectangle->setChecked(false);
+        }
+        return true;
+    }
+
+    // Polygon ROI
+    if (polygonSelectionActive) {
+        if (mouseEvent->button() == Qt::LeftButton) {
+            roiPolygonPoints.emplace_back(origX, origY);
+
+            cv::Mat displayMat;
+            if (inputImage.channels() == 1)
+                cv::cvtColor(inputImage, displayMat, cv::COLOR_GRAY2BGR);
+            else
+                displayMat = inputImage.clone();
+            for (size_t i = 0; i < roiPolygonPoints.size(); ++i) {
+                cv::circle(displayMat, roiPolygonPoints[i], 3, cv::Scalar(0, 255, 0), -1);
+                if (i > 0)
+                    cv::line(displayMat, roiPolygonPoints[i - 1], roiPolygonPoints[i],
+                             cv::Scalar(144, 238, 144), 2);
             }
 
-            // Polygon (custom) ROI selection
-            if (polygonSelectionActive) {
-                // left click adds a point
-                if (mouseEvent->button() == Qt::LeftButton) {
-                    roiPolygonPoints.emplace_back(origX, origY);
-                    // draw temporary polygon/points for visualization
-                    cv::Mat displayImage;
-                    if (inputImage.channels() == 1)
-                        cv::cvtColor(inputImage, displayImage, cv::COLOR_GRAY2BGR);
-                    else
-                        displayImage = inputImage.clone();
-                    // draw existing polygon edges and points
-                    for (size_t i = 0; i < roiPolygonPoints.size(); ++i) {
-                        cv::circle(displayImage, roiPolygonPoints[i], 3, cv::Scalar(0, 255, 0), -1);
-                        if (i > 0)
-                            cv::line(displayImage, roiPolygonPoints[i-1], roiPolygonPoints[i], cv::Scalar(144, 238, 144), 2);
-                    }
-                    outputFeretImage = displayImage.clone();
-                    outputEllipseImage = displayImage.clone();
-                    outputMBRImage = displayImage.clone();
-                }
-                // right click finishes polygon
-                else if (mouseEvent->button() == Qt::RightButton) {
-                    if (roiPolygonPoints.size() >= 3) {
-                        userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
-                        std::vector<std::vector<cv::Point>> pts;
-                        pts.push_back(roiPolygonPoints);
-                        cv::fillPoly(userROIMask, pts, cv::Scalar(255));
-                        // draw final polygon on display
-                        cv::Mat displayImage;
-                        if (inputImage.channels() == 1)
-                            cv::cvtColor(inputImage, displayImage, cv::COLOR_GRAY2BGR);
-                        else
-                            displayImage = inputImage.clone();
-                        const cv::Point* ptsArr[1] = { roiPolygonPoints.data() };
-                        int npts = static_cast<int>(roiPolygonPoints.size());
-                        cv::polylines(displayImage, ptsArr, &npts, 1, true, cv::Scalar(144, 238, 144), 2);
-                        outputFeretImage = displayImage.clone();
-                        outputEllipseImage = displayImage.clone();
-                        outputMBRImage = displayImage.clone();
-                        // finish
-                        polygonSelectionActive = false;
-                        ui.toolButtonSelectROICustom->setChecked(false);
-                        
-                    }
-                    else {
-                        // not enough points, clear
-                        roiPolygonPoints.clear();
-                        polygonSelectionActive = false;
-                        ui.toolButtonSelectROICustom->setChecked(false);
-                    }
-                }
-                return true;
+            QImage qImage = ImageIO::cvMatToQImage(displayMat);
+            currentDisplay = qImage;
+            displayImage(qImage);
+
+            /*outputFeretImage   = displayMat.clone();
+            outputEllipseImage = displayMat.clone();
+            outputMBRImage     = displayMat.clone();*/
+        }
+        else if (mouseEvent->button() == Qt::RightButton) {
+            if (roiPolygonPoints.size() >= 3) {
+                userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
+                std::vector<std::vector<cv::Point>> pts;
+                pts.push_back(roiPolygonPoints);
+                cv::fillPoly(userROIMask, pts, cv::Scalar(255));
+
+                cv::Mat displayMat;
+                if (inputImage.channels() == 1)
+                    cv::cvtColor(inputImage, displayMat, cv::COLOR_GRAY2BGR);
+                else
+                    displayMat = inputImage.clone();
+                const cv::Point* ptsArr[1] = { roiPolygonPoints.data() };
+                int npts = static_cast<int>(roiPolygonPoints.size());
+                cv::polylines(displayMat, ptsArr, &npts, 1, true,
+                              cv::Scalar(144, 238, 144), 2);
+
+                QImage qImage = ImageIO::cvMatToQImage(displayMat);
+                currentDisplay = qImage;
+                displayImage(qImage);
+
+                //outputFeretImage   = displayMat.clone();
+                //outputEllipseImage = displayMat.clone();
+                //outputMBRImage     = displayMat.clone();
+
+                polygonSelectionActive = false;
+                ui.toolButtonSelectROICustom->setChecked(false);
+            } else {
+                roiPolygonPoints.clear();
+                polygonSelectionActive = false;
+                ui.toolButtonSelectROICustom->setChecked(false);
             }
         }
+        return true;
     }
     return QMainWindow::eventFilter(obj, event);
 }
 
-// Akcie pre menu Subor: otvorenie, ulozenie, atd.
+// ============================================================================
+// Subor: Open / Save
+// ============================================================================
 void ImageSegmentation::on_actionOpen_triggered()
 {
-    QString filename = QFileDialog::getOpenFileName(this, "Open Image", "D:/stu/bachelor/Kopani vyber Fe castica/",
+    QString filename = QFileDialog::getOpenFileName(
+        this, "Open Image",
+        "D:/stu/bachelor/Kopani vyber Fe castica/",
         "Image Files (*.png *.jpg *.tif)");
-    if (filename.isEmpty())
-        return;
-    cv::Mat loadedImage = cv::imread(filename.toStdString(), cv::IMREAD_GRAYSCALE);
+    if (filename.isEmpty()) return;
+
+    cv::Mat loadedImage = ImageIO::loadGrayscaleImage(filename);
     if (loadedImage.empty()) {
         QMessageBox::critical(this, "Error", "Failed to load image");
         return;
     }
 
-    // Clear previous state before applying the newly loaded image
     clearAllData();
 
-    // opytaj sa na odstranenie info overlay
-    bool removeOverlay = false;
     int ret = QMessageBox::question(this,
         "Remove an information overlay",
         "Does this image have an info overlay?",
         QMessageBox::Yes | QMessageBox::No);
-    if (ret == QMessageBox::Yes)
-        removeOverlay = true;
+    inputImage = (ret == QMessageBox::Yes)
+                     ? ImageIO::removeInfoOverlay(loadedImage)
+                     : loadedImage;
 
-    // aplikuj overlay removal ak ziadane
-    if (removeOverlay)
-        inputImage = removeInfoOverlay(loadedImage);
-    else
-        inputImage = loadedImage;
-
-    // zobraz vstupny obraz
-    QImage qimg = cvMatToQImage(inputImage);
+    QImage qimg = ImageIO::cvMatToQImage(inputImage);
     displayImage(qimg);
 
-    // nastav plochu obrazu v UI
     imageArea = inputImage.rows * inputImage.cols;
     ui.spinBoxImageArea->setValue(imageArea);
     ui.spinBoxObjectArea->setValue(0);
 
-    // predvolene seed intenzity
-    computeSeedIntensities(inputImage, currentMode, defaultObjectIntensity, defaultBackgroundIntensity);
+    Segmentation::computeSeedIntensities(inputImage, currentMode,
+                                         defaultObjectIntensity,
+                                         defaultBackgroundIntensity);
     ui.doubleSpinBoxObject->setValue(defaultObjectIntensity);
     ui.doubleSpinBoxBackground->setValue(defaultBackgroundIntensity);
-    // zrus existujucu ROI masku
+
     userROIMask.release();
 
     QFileInfo fi(filename);
     loadedImageName = fi.baseName();
 
-    // aktualizuj seed intenzity
     updateSeedIntensities();
 }
 
-// Ulozenie obrazka s prekryvmi do suboru
 void ImageSegmentation::on_actionSave_triggered()
 {
-    // navrh nazvu suboru podla mena obrazka
-    QString defaultName = loadedImageName.isEmpty() ? "output_overlay" : loadedImageName + "_overlay";
+    QString defaultName = loadedImageName.isEmpty()
+                              ? "output_overlay"
+                              : loadedImageName + "_overlay";
     QString filename = QFileDialog::getSaveFileName(this,
         "Save Image with Overlays",
         "D:/stu/bachelor/Kopani vyber Fe castica/" + defaultName + ".tif",
         "TIF Image (*.tif)");
-    if (filename.isEmpty())
-        return;
+    if (filename.isEmpty()) return;
 
-   
-
-    cv::Mat saveMat = QImageToCvMat(currentDisplay);
-
-    // ak je segmentovany objekt, pridaj anotaciu
-    /*if (segmentedObjectArea > 0)
-        saveMat = annotateImage(saveMat, segmentedObjectArea, imageArea);*/
-
-    // zapis do suboru
-    cv::imwrite(filename.toStdString(), saveMat);
+    cv::Mat saveMat = ImageIO::QImageToCvMat(currentDisplay);
+    ImageIO::saveImage(filename, saveMat);
 }
 
-// Ulozenie samostatneho segmentovaneho objektu
 void ImageSegmentation::on_actionSaveObject_triggered()
 {
-    // skontroluj, ci existuje segmentacia
     if (inputImage.empty() || lastObjectMask.empty()) {
         QMessageBox::warning(this, "Warning", "No segmented object available to save");
         return;
     }
 
-    // vytvor prazdny obrazok pozadia a skopiruj do neho objekt
-    cv::Mat segmentedImage;
-    if (lastIsLightObject)
-        segmentedImage = cv::Mat::zeros(inputImage.size(), inputImage.type());
-    else
-        segmentedImage = cv::Mat::ones(inputImage.size(), inputImage.type()) * 255;
+    cv::Mat segmentedImage = lastIsLightObject
+        ? cv::Mat::zeros(inputImage.size(), inputImage.type())
+        : cv::Mat::ones(inputImage.size(), inputImage.type()) * 255;
     inputImage.copyTo(segmentedImage, lastObjectMask);
 
-    // ak je objekt, pridaj anotaciu
-    if (segmentedObjectArea > 0)
-        segmentedImage = annotateImage(segmentedImage, segmentedObjectArea, imageArea);
-
-    // vyber nazov suboru
-    QString defaultName = loadedImageName.isEmpty() ? "segmented_object" : loadedImageName + "_object";
+    QString defaultName = loadedImageName.isEmpty()
+                              ? "segmented_object"
+                              : loadedImageName + "_object";
     QString filename = QFileDialog::getSaveFileName(this,
         "Save Segmented Object",
         defaultName + ".png",
         "PNG Image (*.png);;JPEG Image (*.jpg)");
-    if (filename.isEmpty())
-        return;
+    if (filename.isEmpty()) return;
 
-    // zapis do suboru
-    cv::imwrite(filename.toStdString(), segmentedImage);
+    ImageIO::saveImage(filename, segmentedImage);
 }
 
-// Ulozenie vsetkych stavov segmentacie do priecinka
 void ImageSegmentation::on_actionSaveAllStates_triggered()
 {
-    // vyber priecinka pre ukladanie
     QString folder = QFileDialog::getExistingDirectory(this,
         "Select Folder to Save All States",
         QDir::homePath());
-    if (folder.isEmpty())
-        return;
+    if (folder.isEmpty()) return;
 
-    // ziskanie prefixu pre nazvy suborov
     QString baseName = loadedImageName.isEmpty() ? "output" : loadedImageName;
     bool ok;
     QString customPrefix = QInputDialog::getText(this,
         "Save All States",
         "Enter file name prefix:",
-        QLineEdit::Normal,
-        baseName,
-        &ok);
+        QLineEdit::Normal, baseName, &ok);
     if (ok && !customPrefix.isEmpty())
         baseName = customPrefix;
 
-    // vytvorenie cest k suborom
-    QString fileObject = folder + "/" + baseName + "_object.png";
-    QString fileEdge = folder + "/" + baseName + "_edge.png";
-    QString fileFeret = folder + "/" + baseName + "_feret.png";
-    QString fileEllipse = folder + "/" + baseName + "_ellipse.png";
-    QString fileMBR = folder + "/" + baseName + "_MBR.png";
-
-    // uloz segmentovany objekt analogicky ako v on_actionSaveObject
-    if (!inputImage.empty() && !lastObjectMask.empty())
-    {
-        cv::Mat segmentedImage;
-        if (lastIsLightObject)
-            segmentedImage = cv::Mat::zeros(inputImage.size(), inputImage.type());
-        else
-            segmentedImage = cv::Mat::ones(inputImage.size(), inputImage.type()) * 255;
+    if (!inputImage.empty() && !lastObjectMask.empty()) {
+        cv::Mat segmentedImage = lastIsLightObject
+            ? cv::Mat::zeros(inputImage.size(), inputImage.type())
+            : cv::Mat::ones(inputImage.size(), inputImage.type()) * 255;
         inputImage.copyTo(segmentedImage, lastObjectMask);
-        if (segmentedObjectArea > 0)
-            segmentedImage = annotateImage(segmentedImage, segmentedObjectArea, imageArea);
-        cv::imwrite(fileObject.toStdString(), segmentedImage);
-    }
-    else
-    {
-        // upozornenie, ak nie je co ulozit
+        ImageIO::saveImage(folder + "/" + baseName + "_object.png", segmentedImage);
+    } else {
         QMessageBox::warning(this, "Save All States", "No segmented object available to save.");
     }
 
-    // uloz ostatne stavy
     if (!outputEdgeImage.empty())
-        cv::imwrite(fileEdge.toStdString(), outputEdgeImage);
+        ImageIO::saveImage(folder + "/" + baseName + "_edge.png",    outputEdgeImage);
     if (!outputFeretImage.empty())
-        cv::imwrite(fileFeret.toStdString(), outputFeretImage);
+        ImageIO::saveImage(folder + "/" + baseName + "_feret.png",   outputFeretImage);
     if (!outputEllipseImage.empty())
-        cv::imwrite(fileEllipse.toStdString(), outputEllipseImage);
+        ImageIO::saveImage(folder + "/" + baseName + "_ellipse.png", outputEllipseImage);
     if (!outputMBRImage.empty())
-        cv::imwrite(fileMBR.toStdString(), outputMBRImage);
+        ImageIO::saveImage(folder + "/" + baseName + "_MBR.png",     outputMBRImage);
 
-    // informuj uzivatela o ukonceni
-    QMessageBox::information(this,
-        "Save All States",
+    QMessageBox::information(this, "Save All States",
         "All available state images have been saved to:\n" + folder);
 }
 
-// Ulozenie informacii o vybranej oblasti do textoveho suboru
 void ImageSegmentation::on_actionSaveInfo_triggered()
 {
-    // skontroluj, ci mame nahraty obrazok a segmentacnu masku
     if (inputImage.empty() || lastObjectMask.empty()) {
         QMessageBox::warning(this, "Warning", "No segmented object available to compute info");
         return;
     }
 
-    // ziskanie zakladnych statistickych udajov
-    int area = segmentedObjectArea;
+    int    area        = segmentedObjectArea;
     double areaPercent = (imageArea > 0) ? (area * 100.0 / imageArea) : 0.0;
-    double meanGray = cv::mean(inputImage, lastObjectMask)[0];
+    double meanGray    = cv::mean(inputImage, lastObjectMask)[0];
 
-    // vypocet historamu intenzit
     cv::Mat hist;
     int histSize = 256;
-    float range[] = { 0,256 };
+    float range[] = { 0, 256 };
     const float* histRange = { range };
     cv::calcHist(&inputImage, 1, 0, lastObjectMask, hist, 1, &histSize, &histRange);
 
-    // najdenie modalnej hodnoty z histogrmu
     double maxHistVal = 0;
-    int modalGray = 0;
+    int    modalGray  = 0;
     for (int i = 0; i < histSize; i++) {
         float hVal = hist.at<float>(i);
         if (hVal > maxHistVal) { maxHistVal = hVal; modalGray = i; }
     }
 
-    // min a max intenzita v oblasti
     double minGray, maxGray;
     cv::minMaxLoc(inputImage, &minGray, &maxGray, nullptr, nullptr, lastObjectMask);
 
-    // vypocet stredu hmotnosti (centroid)
     double sumX = 0, sumY = 0;
     int count = 0;
     for (int i = 0; i < lastObjectMask.rows; i++) {
         for (int j = 0; j < lastObjectMask.cols; j++) {
             if (lastObjectMask.at<uchar>(i, j) > 0) {
-                sumX += j;
-                sumY += i;
-                count++;
+                sumX += j; sumY += i; count++;
             }
         }
     }
     double centroidX = (count > 0) ? (sumX / count) : 0;
     double centroidY = (count > 0) ? (sumY / count) : 0;
 
-    // vypocet obvodu kontury
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(lastObjectMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
     double perimeter = 0;
@@ -587,47 +494,40 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
         int idx = 0;
         for (size_t i = 0; i < contours.size(); i++) {
             double a = cv::contourArea(contours[i]);
-            if (a > maxContArea) { maxContArea = a; idx = i; }
+            if (a > maxContArea) { maxContArea = a; idx = static_cast<int>(i); }
         }
         perimeter = cv::arcLength(contours[idx], true);
     }
 
-    // vypocet Feretovych priemerov a priemeru z ekvivaletnej kruznice
     double longestFeret = 0.0, shortestFeret = 0.0, circleDiameter = 0.0;
     cv::Mat dummyAnnotated;
-    computeFeretDiameterAndCircle(inputImage, lastObjectMask, dummyAnnotated, longestFeret, circleDiameter, shortestFeret);
+    Segmentation::computeFeretDiameterAndCircle(inputImage, lastObjectMask,
+                                                dummyAnnotated, longestFeret,
+                                                circleDiameter, shortestFeret);
 
-    // vypocet hlavnych a vedlajsich osi Legendreovej elipsy
     double majorAxis = 0.0, minorAxis = 0.0;
-    computeLegendreEllipse(inputImage, lastObjectMask, dummyAnnotated, majorAxis, minorAxis);
-
-    // vypocet pomeru elipsy
+    Segmentation::computeLegendreEllipse(inputImage, lastObjectMask,
+                                         dummyAnnotated, majorAxis, minorAxis);
     double ellipseRatio = (majorAxis != 0) ? (minorAxis / majorAxis) : 0.0;
 
-    // vypocet rozmerov MBR a pomeru L/W
     double longDiameter = 0.0, shortDiameter = 0.0;
-    computeMBR(inputImage, lastObjectMask, dummyAnnotated, longDiameter, shortDiameter);
-    double LWRatio = (longDiameter != 0) ? (shortDiameter / longDiameter) : 0.0;
+    Segmentation::computeMBR(inputImage, lastObjectMask, dummyAnnotated,
+                             longDiameter, shortDiameter);
+    double LWRatio     = (longDiameter   != 0) ? (shortDiameter / longDiameter) : 0.0;
+    double aspectRatio = (longestFeret   != 0) ? (shortestFeret / longestFeret) : 0.0;
+    double perimEqDia  = (perimeter      > 0)  ? (perimeter / M_PI)             : 0.0;
+    double circularity = (perimEqDia     > 0)  ? (circleDiameter / perimEqDia)  : 0.0;
 
-    // vypocet aspect ratio
-    double aspectRatio = (longestFeret != 0) ? (shortestFeret / longestFeret) : 0.0;
-
-    // vypocet circularity
-    double perimEqDia = (perimeter > 0.0) ? (perimeter / M_PI) : 0.0;
-    double circularity = (perimEqDia > 0.0) ? (circleDiameter / perimEqDia) : 0.0;
-
-    // prepocty na nanometre
-    double pSize = ui.doubleSpinBoxPixelSize->value();
-    double area_nm2 = area * pSize;
-    double perimeter_nm = perimeter * pSize;
-    double longestFeret_nm = longestFeret * pSize;
+    double pSize           = ui.doubleSpinBoxPixelSize->value();
+    double area_nm2        = area          * pSize;
+    double perimeter_nm    = perimeter     * pSize;
+    double longestFeret_nm  = longestFeret  * pSize;
     double shortestFeret_nm = shortestFeret * pSize;
-    double majorAxis_nm = majorAxis * pSize;
-    double minorAxis_nm = minorAxis * pSize;
-    double longDiameter_nm = longDiameter * pSize;
+    double majorAxis_nm    = majorAxis     * pSize;
+    double minorAxis_nm    = minorAxis     * pSize;
+    double longDiameter_nm  = longDiameter  * pSize;
     double shortDiameter_nm = shortDiameter * pSize;
 
-    // skomponovanie retazca s informaciami
     QString info;
     if (ui.checkBoxArea->isChecked())
         info += "Area: " + QString::number(area) + " pixels (" + QString::number(area_nm2, 'f', 2) + " nm^2)\n";
@@ -645,7 +545,7 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
         info += "Perimeter: " + QString::number(perimeter) + " pixels (" + QString::number(perimeter_nm, 'f', 2) + " nm)\n";
     if (ui.checkBoxFeret->isChecked())
         info += "Feret diameters: " + QString::number(longestFeret) + " / " + QString::number(shortestFeret) +
-        " pixels (" + QString::number(longestFeret_nm, 'f', 2) + " / " + QString::number(shortestFeret_nm, 'f', 2) + " nm)\n";
+                " pixels (" + QString::number(longestFeret_nm, 'f', 2) + " / " + QString::number(shortestFeret_nm, 'f', 2) + " nm)\n";
     if (ui.checkBoxCircularity->isChecked())
         info += "Area-equivalent circle diameter: " + QString::number(circleDiameter) + " pixels\n";
     if (ui.checkBoxEllipseRatio->isChecked())
@@ -655,14 +555,13 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
     if (ui.checkBoxAspectRatio->isChecked())
         info += "Aspect Ratio (Shortest/Longest Feret): " + QString::number(aspectRatio, 'f', 2) + "\n";
 
-    // ulozenie do textoveho suboru
-    QString defaultName = loadedImageName.isEmpty() ? "selection_info" : loadedImageName + "_info";
+    QString defaultName = loadedImageName.isEmpty()
+                              ? "selection_info"
+                              : loadedImageName + "_info";
     QString filename = QFileDialog::getSaveFileName(this,
-        "Save Selection Info",
-        defaultName + ".txt",
-        "Text Files (*.txt)");
-    if (filename.isEmpty())
-        return;
+        "Save Selection Info", defaultName + ".txt", "Text Files (*.txt)");
+    if (filename.isEmpty()) return;
+
     QFile file(filename);
     if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&file);
@@ -672,62 +571,70 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
     }
 }
 
-// Nastavenie mierky a zobrazenie
+// ============================================================================
+// Spracovanie a prepinanie zobrazeni
+// ============================================================================
+
+void ImageSegmentation::on_pushButtonProcess_clicked()
+{
+    if (inputImage.empty()) {
+        QMessageBox::warning(this, "Warning", "Please open an image first");
+        return;
+    }
+    runSegmentation();
+}
+
 void ImageSegmentation::on_pushButtonScale_clicked()
 {
     scaleFactor = ui.doubleSpinBoxScale->value();
     displayImage(currentDisplay);
 }
 
+void ImageSegmentation::on_actionOriginal_triggered()
+{
+    QImage qImage = ImageIO::cvMatToQImage(inputImage);
+    displayImage(qImage);
+}
+
 void ImageSegmentation::on_actionFeret_triggered()
 {
-    QImage qImage;
-    qImage = cvMatToQImage(outputFeretImage);
+    QImage qImage = ImageIO::cvMatToQImage(outputFeretImage);
     currentDisplay = qImage;
     displayImage(qImage);
 }
 
 void ImageSegmentation::on_actionEdge_triggered()
 {
-    QImage qImage;
-    qImage = cvMatToQImage(outputEdgeImage);
+    QImage qImage = ImageIO::cvMatToQImage(outputEdgeImage);
     currentDisplay = qImage;
     displayImage(qImage);
 }
 
-// Prepnutie zobrazenia na segmentovany objekt
 void ImageSegmentation::on_actionObject_triggered()
 {
-    QImage qImage;
-    qImage = cvMatToQImage(outputObjectImage);
+    QImage qImage = ImageIO::cvMatToQImage(outputObjectImage);
     currentDisplay = qImage;
     displayImage(qImage);
 }
 
 void ImageSegmentation::on_actionEllipse_triggered()
 {
-    QImage qImage;
-    qImage = cvMatToQImage(outputEllipseImage);
+    QImage qImage = ImageIO::cvMatToQImage(outputEllipseImage);
     currentDisplay = qImage;
     displayImage(qImage);
 }
 
 void ImageSegmentation::on_actionMBR_triggered()
 {
-    QImage qImage;
-    qImage = cvMatToQImage(outputMBRImage);
+    QImage qImage = ImageIO::cvMatToQImage(outputMBRImage);
     currentDisplay = qImage;
     displayImage(qImage);
 }
 
-void ImageSegmentation::on_actionOriginal_triggered()
-{
-    QImage qImage;
-    qImage = cvMatToQImage(inputImage);
-    displayImage(qImage);
-}
+// ============================================================================
+// Slider <-> SpinBox synchronizacia
+// ============================================================================
 
-// Zmena hodnot seed intenzit 
 void ImageSegmentation::on_horizontalSliderBackground_valueChanged()
 {
     ui.doubleSpinBoxBackground->setValue(ui.horizontalSliderBackground->value());
@@ -748,17 +655,18 @@ void ImageSegmentation::on_doubleSpinBoxObject_valueChanged()
     ui.horizontalSliderObject->setValue(ui.doubleSpinBoxObject->value());
 }
 
+// ============================================================================
+// ROI tlacitka
+// ============================================================================
 
-// Aktivacia / ukoncenie rezimu pre ROI vyber
 void ImageSegmentation::on_toolButtonSelectROIRectangle_toggled(bool checked)
 {
     if (checked) {
         roiSelectionActive = true;
-        roiFirstPointSet = false;
-    }
-    else {
+        roiFirstPointSet   = false;
+    } else {
         roiSelectionActive = false;
-        roiFirstPointSet = false;
+        roiFirstPointSet   = false;
         updateSeedIntensities();
     }
 }
@@ -768,25 +676,12 @@ void ImageSegmentation::on_toolButtonSelectROICustom_toggled(bool checked)
     if (checked) {
         polygonSelectionActive = true;
         roiPolygonPoints.clear();
-        roiSelectionActive = false; // avoid conflict with rectangle mode
+        roiSelectionActive = false;
         ui.toolButtonSelectROIRectangle->setChecked(false);
-    }
-    else {
+    } else {
         polygonSelectionActive = false;
-        if (!roiPolygonPoints.empty() && roiPolygonPoints.size() < 3) {
-            roiPolygonPoints.clear(); // invalid polygon
-        }
+        if (!roiPolygonPoints.empty() && roiPolygonPoints.size() < 3)
+            roiPolygonPoints.clear();
         updateSeedIntensities();
     }
-}
-
-// Spustenie segmentacie a zobrazenie vysledku
-void ImageSegmentation::on_pushButtonProcess_clicked()
-{
-    if (inputImage.empty()) {
-        QMessageBox::warning(this, "Warning", "Please open an image first");
-        return;
-    }
-    runSegmentation();
-
 }
