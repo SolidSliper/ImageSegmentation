@@ -84,6 +84,7 @@ private:
 
     // Vyresetuje vsetky obrazy a stav pri otvoreni noveho suboru.
     void clearAllData();
+    void clearImageData();
 
     // Vrati ROI masku - pouziva uzivatelsku ak existuje, inak orez overlay.
     cv::Mat applyROIMask(const cv::Mat& input);
@@ -107,6 +108,7 @@ private slots:
     void on_actionSaveObject_triggered();
     void on_actionSaveInfo_triggered();
     void on_actionSaveAllStates_triggered();
+    void on_actionProcessFolder_triggered();
 
     // Spracovanie
     void on_pushButtonProcess_clicked();

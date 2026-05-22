@@ -21,7 +21,7 @@ set(Qt6WidgetsTools_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6Widg
 set(Qt6CoreTools_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6CoreTools")
 set(Qt6GuiTools_DIR "E:/prog/Qt/${Qt6_Version}/msvc2022_64/lib/cmake/Qt6GuiTools")
 
-find_package(Qt6 COMPONENTS Widgets Core Gui REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Core Gui Concurrent REQUIRED)
 
 # Specify OpenCV package location and find it
 set(OpenCV_DIR "lib/opencv4.1.2/opencv/build/x64/vc16/lib")
@@ -47,6 +47,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Widgets
     Qt6::Core
     Qt6::Gui
+    Qt6::Concurrent
     ${OpenCV_LIBS}
 )
 

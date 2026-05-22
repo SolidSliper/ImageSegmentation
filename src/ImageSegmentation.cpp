@@ -10,6 +10,10 @@
 #include <QTextStream>
 #include <QFileInfo>
 #include <QDir>
+#include <QDirIterator>
+#include <QProgressDialog>
+#include <QFutureWatcher>
+#include <QtConcurrent>
 
 // ============================================================================
 // Konstruktor / destruktor
@@ -53,6 +57,18 @@ ImageSegmentation::~ImageSegmentation() = default;
 // ============================================================================
 // Pomocne UI metody
 // ============================================================================
+
+void ImageSegmentation::clearImageData()
+{
+    inputImage.release();
+    outputObjectImage.release();
+    outputEdgeImage.release();
+    outputFeretImage.release();
+    outputEllipseImage.release();
+    outputMBRImage.release();
+    lastObjectMask.release();
+    userROIMask.release();
+}
 
 void ImageSegmentation::clearAllData()
 {
@@ -139,13 +155,6 @@ void ImageSegmentation::runSegmentation()
 {
     userObject     = ui.doubleSpinBoxObject->value();
     userBackground = ui.doubleSpinBoxBackground->value();
-
-    // Default ROI on whole image    
-    int imgWidth = inputImage.size().width;
-    int imgHeight = inputImage.size().height;
-    cv::Rect roiRect(0, 0, imgWidth - 1, imgHeight - 1);
-    userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
-    userROIMask(roiRect).setTo(255);
 
     QElapsedTimer segTimer;
     segTimer.start();
@@ -290,6 +299,8 @@ bool ImageSegmentation::eventFilter(QObject* obj, QEvent* event)
                 pts.push_back(roiPolygonPoints);
                 cv::fillPoly(userROIMask, pts, cv::Scalar(255));
 
+
+
                 cv::Mat displayMat;
                 if (inputImage.channels() == 1)
                     cv::cvtColor(inputImage, displayMat, cv::COLOR_GRAY2BGR);
@@ -360,6 +371,13 @@ void ImageSegmentation::on_actionOpen_triggered()
                                          defaultBackgroundIntensity);
     ui.doubleSpinBoxObject->setValue(defaultObjectIntensity);
     ui.doubleSpinBoxBackground->setValue(defaultBackgroundIntensity);
+
+    // Default ROI on whole image    
+    int imgWidth = inputImage.size().width;
+    int imgHeight = inputImage.size().height;
+    cv::Rect roiRect(0, 0, imgWidth - 1, imgHeight - 1);
+    userROIMask = cv::Mat::zeros(inputImage.size(), CV_8UC1);
+    userROIMask(roiRect).setTo(255);
 
     userROIMask.release();
 
@@ -447,6 +465,120 @@ void ImageSegmentation::on_actionSaveAllStates_triggered()
         "All available state images have been saved to:\n" + folder);
 }
 
+void ImageSegmentation::on_actionProcessFolder_triggered()
+{
+    QString folder = QFileDialog::getExistingDirectory(
+        this,
+        "Select Folder for Processing",
+        QDir::homePath());
+
+    if (folder.isEmpty())
+        return;
+
+    QDir(folder).mkdir("processed");
+
+    QStringList files;
+
+    QDirIterator it(
+        folder,
+        QStringList() << "*.jpg" << "*.png",
+        QDir::Files);
+
+    while (it.hasNext())
+        files << it.next();
+
+    const int total = files.size();
+
+    if (total == 0)
+        return;
+
+    cv::Mat savedROI = userROIMask.clone();
+
+    auto* dialog = new QProgressDialog(
+        "Remaining images: " + QString::number(total),
+        nullptr,
+        0,
+        total,
+        this);
+
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setMinimumDuration(0);
+    dialog->setAutoClose(true);
+
+
+    auto* watcher = new QFutureWatcher<void>(this);
+
+    QFuture<void> future = QtConcurrent::run(
+        [this, files, dialog, total, folder, savedROI]()
+        {
+            int done = 0;
+
+            for (const QString& file : files)
+            {
+                inputImage = ImageIO::loadGrayscaleImage(file);
+                QFileInfo fi(file);
+                loadedImageName = fi.baseName();
+                QString baseName = loadedImageName.isEmpty() ? "output" : loadedImageName;
+
+                if (!savedROI.empty() && savedROI.size() == inputImage.size())
+                    userROIMask = savedROI.clone();
+
+                runSegmentation();
+
+                if (!inputImage.empty() && !lastObjectMask.empty()) {
+                    cv::Mat segmentedImage = lastIsLightObject
+                        ? cv::Mat::zeros(inputImage.size(), inputImage.type())
+                        : cv::Mat::ones(inputImage.size(), inputImage.type()) * 255;
+                    inputImage.copyTo(segmentedImage, lastObjectMask);
+                    ImageIO::saveImage(folder + "/processed/" + baseName + "_object.png", segmentedImage);
+                }
+                else {
+                    QMessageBox::warning(this, "Save All States", "No segmented object available to save.");
+                }
+
+                if (!outputEdgeImage.empty())
+                    ImageIO::saveImage(folder + "/processed/" + baseName + "_edge.png", outputEdgeImage);
+                if (!outputFeretImage.empty())
+                    ImageIO::saveImage(folder + "/processed/" + baseName + "_feret.png", outputFeretImage);
+                if (!outputEllipseImage.empty())
+                    ImageIO::saveImage(folder + "/processed/" + baseName + "_ellipse.png", outputEllipseImage);
+                if (!outputMBRImage.empty())
+                    ImageIO::saveImage(folder + "/processed/" + baseName + "_MBR.png", outputMBRImage);
+
+                done++;
+
+                int remaining = total - done;
+
+                QMetaObject::invokeMethod(
+                    dialog,
+                    [dialog, done, remaining]()
+                    {
+                        dialog->setValue(done);
+                        dialog->setLabelText(
+                            QString("Remaining images: %1")
+                            .arg(remaining));
+                    },
+                    Qt::QueuedConnection);
+            }
+        });
+
+    connect(
+        watcher,
+        &QFutureWatcher<void>::finished,
+        dialog,
+        &QProgressDialog::close);
+
+    connect(
+        watcher,
+        &QFutureWatcher<void>::finished,
+        watcher,
+        &QObject::deleteLater);
+
+    watcher->setFuture(future);
+
+    dialog->show();
+}
+
 void ImageSegmentation::on_actionSaveInfo_triggered()
 {
     if (inputImage.empty() || lastObjectMask.empty()) {
@@ -486,18 +618,20 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
     double centroidX = (count > 0) ? (sumX / count) : 0;
     double centroidY = (count > 0) ? (sumY / count) : 0;
 
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(lastObjectMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    double perimeter = 0;
-    if (!contours.empty()) {
-        double maxContArea = 0;
-        int idx = 0;
-        for (size_t i = 0; i < contours.size(); i++) {
-            double a = cv::contourArea(contours[i]);
-            if (a > maxContArea) { maxContArea = a; idx = static_cast<int>(i); }
+    int nedge = 0;
+    for (int i = 0; i < lastObjectMask.rows; i++) {
+        for (int j = 0; j < lastObjectMask.cols; j++) {
+            if (lastObjectMask.at<uchar>(i, j) > 0) {
+                bool isBoundary = false;
+                if (i > 0 && lastObjectMask.at<uchar>(i - 1, j) == 0) isBoundary = true;
+                if (i < lastObjectMask.rows - 1 && lastObjectMask.at<uchar>(i + 1, j) == 0) isBoundary = true;
+                if (j > 0 && lastObjectMask.at<uchar>(i, j - 1) == 0) isBoundary = true;
+                if (j < lastObjectMask.cols - 1 && lastObjectMask.at<uchar>(i, j + 1) == 0) isBoundary = true;
+                if (isBoundary) nedge++;
+            }
         }
-        perimeter = cv::arcLength(contours[idx], true);
     }
+    double perimeter = static_cast<double>(nedge); 
 
     double longestFeret = 0.0, shortestFeret = 0.0, circleDiameter = 0.0;
     cv::Mat dummyAnnotated;

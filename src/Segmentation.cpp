@@ -527,7 +527,7 @@ void createOutputImages(const cv::Mat& inputImage,
         for (int j = 0; j < n; j++) {
             auto* node = pixelNodes[i][j];
             if (visited[node->id])
-                outputObject.at<cv::Vec3b>(i, j) = cv::Vec3b(255, 255, 255);
+                outputObject.at<cv::Vec3b>(i, j) = cv::Vec3b(node->intensity, node->intensity, node->intensity);
             else
                 outputObject.at<cv::Vec3b>(i, j) = cv::Vec3b(0, 0, 0);
         }
