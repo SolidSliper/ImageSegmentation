@@ -623,11 +623,15 @@ void ImageSegmentation::on_actionSaveInfo_triggered()
         for (int j = 0; j < lastObjectMask.cols; j++) {
             if (lastObjectMask.at<uchar>(i, j) > 0) {
                 bool isBoundary = false;
-                if (i > 0 && lastObjectMask.at<uchar>(i - 1, j) == 0) isBoundary = true;
+                /*if (i > 0 && lastObjectMask.at<uchar>(i - 1, j) == 0) isBoundary = true;
                 if (i < lastObjectMask.rows - 1 && lastObjectMask.at<uchar>(i + 1, j) == 0) isBoundary = true;
                 if (j > 0 && lastObjectMask.at<uchar>(i, j - 1) == 0) isBoundary = true;
                 if (j < lastObjectMask.cols - 1 && lastObjectMask.at<uchar>(i, j + 1) == 0) isBoundary = true;
-                if (isBoundary) nedge++;
+                if (isBoundary) nedge++;*/
+                if (i > 0 && lastObjectMask.at<uchar>(i - 1, j) == 0) nedge++;
+                if (i < lastObjectMask.rows - 1 && lastObjectMask.at<uchar>(i + 1, j) == 0) nedge++;
+                if (j > 0 && lastObjectMask.at<uchar>(i, j - 1) == 0) nedge++;
+                if (j < lastObjectMask.cols - 1 && lastObjectMask.at<uchar>(i, j + 1) == 0) nedge++;
             }
         }
     }
